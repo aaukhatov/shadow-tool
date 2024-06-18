@@ -9,7 +9,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -77,56 +76,48 @@ func NewWithEncryptionService(instance string, percentage int, encryptionService
 //
 // Returns: The result of the current flow.
 func (s *ShadowFlow) Compare(currentFlow func() interface{}, newFlow func() interface{}) interface{} {
-	var waitGroup sync.WaitGroup
 	var originalResponse interface{}
 	var shadowResponse interface{}
 
-	waitGroup.Add(1)
-	go func() {
-		defer waitGroup.Done()
-		originalResponse = currentFlow()
-	}()
+	originalResponse = currentFlow()
 
 	if s.shouldCallNewFlow() {
 		logger.Printf("[%s] Calling new flow: true", s.instance)
-
-		waitGroup.Add(1)
 		go func() {
-			defer waitGroup.Done()
 			shadowResponse = newFlow()
+			if shadowResponse != nil {
+				s.diff(originalResponse, shadowResponse)
+			}
 		}()
-	}
-
-	waitGroup.Wait()
-
-	if shadowResponse != nil {
-		changelog, err := diff.Diff(originalResponse, shadowResponse)
-
-		if err != nil {
-			logger.Printf("[%s] Failed to compare the shadow flow responses, %s", s.instance, err)
-			return originalResponse
-		}
-
-		changedProperties := make([]string, 0)
-		changedValues := make([]string, 0)
-
-		for _, change := range changelog {
-			fieldPath := toFullPath(change)
-			changedProperties = append(changedProperties, fieldPath)
-			changedValues = append(changedValues, prettyPrintDiff(fieldPath, change))
-		}
-
-		properties := strings.Join(changedProperties, ", ")
-		if s.encryptionService != nil {
-			encryptedValues, _ := s.encryptionService.Encrypt(strings.Join(changedValues, "\n"))
-			logger.Printf("[%s] The following differences were found: %s. Encrypted values: %s", s.instance, properties, encryptedValues)
-		} else {
-			logger.Printf("[%s] The following differences were found: %s", s.instance, properties)
-		}
 	}
 
 	// todo maybe return an error as well?
 	return originalResponse
+}
+
+func (s *ShadowFlow) diff(originalResponse interface{}, shadowResponse interface{}) {
+	changelog, err := diff.Diff(originalResponse, shadowResponse)
+
+	if err != nil {
+		logger.Printf("[%s] Failed to compare the shadow flow responses, %s", s.instance, err)
+	}
+
+	changedProperties := make([]string, 0)
+	changedValues := make([]string, 0)
+
+	for _, change := range changelog {
+		fieldPath := toFullPath(change)
+		changedProperties = append(changedProperties, fieldPath)
+		changedValues = append(changedValues, prettyPrintDiff(fieldPath, change))
+	}
+
+	properties := strings.Join(changedProperties, ", ")
+	if s.encryptionService != nil {
+		encryptedValues, _ := s.encryptionService.Encrypt(strings.Join(changedValues, "\n"))
+		logger.Printf("[%s] The following differences were found: %s. Encrypted values: %s", s.instance, properties, encryptedValues)
+	} else {
+		logger.Printf("[%s] The following differences were found: %s", s.instance, properties)
+	}
 }
 
 func (s *ShadowFlow) shouldCallNewFlow() bool {

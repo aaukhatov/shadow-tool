@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 type dummyResponse struct {
@@ -126,5 +127,27 @@ func TestEncryptionServiceCannotBeNil(t *testing.T) {
 	_, err := NewWithEncryptionService("HUB_NAME", 100, nil)
 	if err == nil {
 		t.Errorf("Expected error when creating ShadowFlow with nil encryption service")
+	}
+}
+
+func TestMainFlowShouldNotWaitShadowFlow(t *testing.T) {
+	buf := new(bytes.Buffer)
+	logger.SetOutput(buf)
+
+	shadowFlow, _ := New("HUB_NAME", 100)
+
+	currentFlow := func() interface{} {
+		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}
+	}
+	newFlow := func() interface{} {
+		time.Sleep(1000 * time.Millisecond) // simulate a long running shadow flow
+		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}
+	}
+
+	shadowFlow.Compare(currentFlow, newFlow)
+
+	time.Sleep(1100 * time.Millisecond) // just wait when a result will be posted
+	if !strings.Contains(buf.String(), "[HUB_NAME] The following differences were found: name, birth-date, Address.number") {
+		t.Errorf("Expected error message not found in log output")
 	}
 }
