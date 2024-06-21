@@ -26,12 +26,9 @@ type ShadowFlow struct {
 }
 
 func New(instance string, percentage int) (*ShadowFlow, error) {
-	if instance == "" {
-		return nil, errors.New("instance name must be provided")
-	}
-
-	if percentage < 0 || percentage > 100 {
-		return nil, errors.New("percentage must be between 0 and 100")
+	err := checkArgs(instance, percentage)
+	if err != nil {
+		return nil, err
 	}
 
 	shadowFlow := &ShadowFlow{
@@ -44,12 +41,9 @@ func New(instance string, percentage int) (*ShadowFlow, error) {
 }
 
 func NewWithEncryptionService(instance string, percentage int, encryptionService EncryptionService) (*ShadowFlow, error) {
-	if instance == "" {
-		return nil, errors.New("instance name must be provided")
-	}
-
-	if percentage < 0 || percentage > 100 {
-		return nil, errors.New("percentage must be between 0 and 100")
+	err := checkArgs(instance, percentage)
+	if err != nil {
+		return nil, err
 	}
 
 	if encryptionService == nil {
@@ -64,6 +58,17 @@ func NewWithEncryptionService(instance string, percentage int, encryptionService
 	}
 
 	return shadowFlow, nil
+}
+
+func checkArgs(instance string, percentage int) error {
+	if instance == "" {
+		return errors.New("instance name must be provided")
+	}
+
+	if percentage < 0 || percentage > 100 {
+		return errors.New("percentage must be between 0 and 100")
+	}
+	return nil
 }
 
 // Compare runs the current flow and, based on a random percentage, may also run the new flow.
