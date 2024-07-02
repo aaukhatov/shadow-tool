@@ -33,6 +33,7 @@ func TestShouldDetectDifferences(t *testing.T) {
 	}
 
 	shadowFlow.Compare(currentFlow, newFlow)
+	shadowFlow.waitGroup.Wait()
 
 	if !strings.Contains(buf.String(), "[HUB_NAME] The following differences were found: name, birth-date, Address.number") {
 		t.Errorf("Expected error message not found in log output")
@@ -51,6 +52,7 @@ func TestCurrentFlowCalledOnce(t *testing.T) {
 
 	shadowFlow, _ := New("HUB_NAME", 100)
 	shadowFlow.Compare(currentFlow, newFlow)
+	shadowFlow.waitGroup.Wait()
 
 	if callCount != 1 {
 		t.Errorf("Expected currentFlow to be called once, but it was called %d times", callCount)
@@ -90,6 +92,7 @@ func TestCompareWithNoopEncryptionService(t *testing.T) {
 	}
 
 	shadowFlow.Compare(currentFlow, newFlow)
+	shadowFlow.waitGroup.Wait()
 
 	expectedEncryptedValues, _ := encryptionService.Encrypt("'name' update: 'John' -> 'Doe'\n'birth-date' update: '2024-01-01' -> '2024-01-02'\n'Address.number' update: '18' -> '20'")
 	expectedLogOutput := fmt.Sprintf("[HUB_NAME] The following differences were found: name, birth-date, Address.number. Encrypted values: %s", expectedEncryptedValues)
@@ -145,8 +148,8 @@ func TestMainFlowShouldNotWaitShadowFlow(t *testing.T) {
 	}
 
 	shadowFlow.Compare(currentFlow, newFlow)
+	shadowFlow.waitGroup.Wait()
 
-	time.Sleep(1100 * time.Millisecond) // just wait when a result will be posted
 	if !strings.Contains(buf.String(), "[HUB_NAME] The following differences were found: name, birth-date, Address.number") {
 		t.Errorf("Expected error message not found in log output")
 	}

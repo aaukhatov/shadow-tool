@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -19,10 +20,11 @@ func init() {
 }
 
 type ShadowFlow struct {
-	instance          string
-	percentage        int
+	instance          string // name of the instance
+	percentage        int    // percentage of the requests that will be shadowed
 	rand              *rand.Rand
-	encryptionService EncryptionService
+	encryptionService EncryptionService // encryptionService encrypting data diff, helps to prevent data leak
+	waitGroup         sync.WaitGroup    // waitGroup take a control over the goroutines
 }
 
 func New(instance string, percentage int) (*ShadowFlow, error) {
@@ -87,8 +89,10 @@ func (s *ShadowFlow) Compare(currentFlow func() interface{}, newFlow func() inte
 	originalResponse = currentFlow()
 
 	if s.shouldCallNewFlow() {
+		s.waitGroup.Add(1)
 		logger.Printf("[%s] Calling new flow: true", s.instance)
 		go func() {
+			defer s.waitGroup.Done()
 			shadowResponse = newFlow()
 			if shadowResponse != nil {
 				s.diff(originalResponse, shadowResponse)
