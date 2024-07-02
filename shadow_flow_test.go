@@ -154,3 +154,30 @@ func TestMainFlowShouldNotWaitShadowFlow(t *testing.T) {
 		t.Errorf("Expected error message not found in log output")
 	}
 }
+
+func TestShouldDetectDifferencesForCollections(t *testing.T) {
+	buf := new(bytes.Buffer)
+	logger.SetOutput(buf)
+
+	shadowFlow, _ := New("HUB_NAME", 100)
+
+	currentFlow := func() []interface{} {
+		return []interface{}{
+			&dummyResponse{Name: "Cristiano Ronaldo", BirthDate: "1985-02-05", Address: address{Number: 7, Street: "Funchal"}},
+			&dummyResponse{Name: "Lionel Messi", BirthDate: "1987-06-24", Address: address{Number: 10, Street: "La Bajada"}},
+		}
+	}
+	newFlow := func() []interface{} {
+		return []interface{}{
+			&dummyResponse{Name: "Cristiano Ronaldo", BirthDate: "1985-02-05", Address: address{Number: 19, Street: "Funchal"}},
+			&dummyResponse{Name: "Lionel Mesi", BirthDate: "1997-06-24", Address: address{Number: 10, Street: "La Bajada"}},
+		}
+	}
+
+	shadowFlow.CompareSlices(currentFlow, newFlow)
+	shadowFlow.waitGroup.Wait()
+
+	if !strings.Contains(buf.String(), "[HUB_NAME] The following differences were found: 0.Address.number, 1.name, 1.birth-date") {
+		t.Errorf("Expected error message not found in log output")
+	}
+}

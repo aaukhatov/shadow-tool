@@ -104,6 +104,24 @@ func (s *ShadowFlow) Compare(currentFlow func() interface{}, newFlow func() inte
 	return originalResponse
 }
 
+func (s *ShadowFlow) CompareSlices(currentFlow func() []interface{}, newFlow func() []interface{}) []interface{} {
+	var originalResponse []interface{}
+	var shadowResponse []interface{}
+
+	originalResponse = currentFlow()
+
+	if s.shouldCallNewFlow() {
+		s.waitGroup.Add(1)
+		logger.Printf("[%s] Calling new flow: true", s.instance)
+		go func() {
+			defer s.waitGroup.Done()
+			shadowResponse = newFlow()
+			s.diff(originalResponse, shadowResponse)
+		}()
+	}
+	return originalResponse
+}
+
 func (s *ShadowFlow) diff(originalResponse interface{}, shadowResponse interface{}) {
 	changelog, err := diff.Diff(originalResponse, shadowResponse)
 
