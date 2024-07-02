@@ -82,44 +82,41 @@ func checkArgs(instance string, percentage int) error {
 // newFlow: A function that when called, returns the result of the new flow.
 //
 // Returns: The result of the current flow.
-func (s *ShadowFlow) Compare(currentFlow func() interface{}, newFlow func() interface{}) interface{} {
+func (s *ShadowFlow) Compare(currentFlow func() (interface{}, error), newFlow func() (interface{}, error)) (interface{}, error) {
 	var originalResponse interface{}
-	var shadowResponse interface{}
+	originalResponse, err := currentFlow()
 
-	originalResponse = currentFlow()
-
-	if s.shouldCallNewFlow() {
+	if s.shouldCallNewFlow() && err == nil {
 		s.waitGroup.Add(1)
 		logger.Printf("[%s] Calling new flow: true", s.instance)
 		go func() {
 			defer s.waitGroup.Done()
-			shadowResponse = newFlow()
-			if shadowResponse != nil {
+			shadowResponse, shdErr := newFlow()
+			if shadowResponse != nil && shdErr == nil {
 				s.diff(originalResponse, shadowResponse)
 			}
 		}()
 	}
-
-	// todo maybe return an error as well?
-	return originalResponse
+	return originalResponse, err
 }
 
-func (s *ShadowFlow) CompareSlices(currentFlow func() []interface{}, newFlow func() []interface{}) []interface{} {
+func (s *ShadowFlow) CompareSlices(currentFlow func() ([]interface{}, error), newFlow func() ([]interface{}, error)) ([]interface{}, error) {
 	var originalResponse []interface{}
-	var shadowResponse []interface{}
 
-	originalResponse = currentFlow()
+	originalResponse, err := currentFlow()
 
-	if s.shouldCallNewFlow() {
+	if s.shouldCallNewFlow() && err == nil {
 		s.waitGroup.Add(1)
 		logger.Printf("[%s] Calling new flow: true", s.instance)
 		go func() {
 			defer s.waitGroup.Done()
-			shadowResponse = newFlow()
-			s.diff(originalResponse, shadowResponse)
+			shadowResponse, shdErr := newFlow()
+			if shadowResponse != nil && shdErr == nil {
+				s.diff(originalResponse, shadowResponse)
+			}
 		}()
 	}
-	return originalResponse
+	return originalResponse, err
 }
 
 func (s *ShadowFlow) diff(originalResponse interface{}, shadowResponse interface{}) {
