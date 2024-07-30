@@ -43,9 +43,6 @@ func (encryptionService *PublicKeyEncryptionService) Encrypt(plainText string) (
 		return "", errors.New("plainText cannot be empty")
 	}
 
-	// todo encryption mode which we use in Java implementation: "RSA/ECB/OAEPWITHSHA-256ANDMGF1PADDING"
-	// 	do we need to use the same mode in Go?
-
 	encryptedData, err := rsa.EncryptOAEP(
 		sha256.New(),
 		rand.Reader,

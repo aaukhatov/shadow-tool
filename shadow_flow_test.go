@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 type dummyResponse struct {
@@ -24,14 +25,15 @@ func TestShouldDetectDifferences(t *testing.T) {
 
 	shadowFlow, _ := New("HUB_NAME", 100)
 
-	currentFlow := func() interface{} {
-		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}
+	currentFlow := func() (interface{}, error) {
+		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
 	}
-	newFlow := func() interface{} {
-		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}
+	newFlow := func() (interface{}, error) {
+		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}, nil
 	}
 
 	shadowFlow.Compare(currentFlow, newFlow)
+	shadowFlow.waitGroup.Wait()
 
 	if !strings.Contains(buf.String(), "[HUB_NAME] The following differences were found: name, birth-date, Address.number") {
 		t.Errorf("Expected error message not found in log output")
@@ -40,16 +42,17 @@ func TestShouldDetectDifferences(t *testing.T) {
 
 func TestCurrentFlowCalledOnce(t *testing.T) {
 	callCount := 0
-	currentFlow := func() interface{} {
+	currentFlow := func() (interface{}, error) {
 		callCount++
-		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}
+		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
 	}
-	newFlow := func() interface{} {
-		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}
+	newFlow := func() (interface{}, error) {
+		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}, nil
 	}
 
 	shadowFlow, _ := New("HUB_NAME", 100)
 	shadowFlow.Compare(currentFlow, newFlow)
+	shadowFlow.waitGroup.Wait()
 
 	if callCount != 1 {
 		t.Errorf("Expected currentFlow to be called once, but it was called %d times", callCount)
@@ -58,12 +61,12 @@ func TestCurrentFlowCalledOnce(t *testing.T) {
 
 func TestNewFlowNotCalled(t *testing.T) {
 	callCount := 0
-	currentFlow := func() interface{} {
-		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}
+	currentFlow := func() (interface{}, error) {
+		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
 	}
-	newFlow := func() interface{} {
+	newFlow := func() (interface{}, error) {
 		callCount++
-		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}
+		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}, nil
 	}
 
 	shadowFlow, _ := New("HUB_NAME", 0) // Set percentage to 0 to ensure newFlow is not called
@@ -81,14 +84,15 @@ func TestCompareWithNoopEncryptionService(t *testing.T) {
 	encryptionService := NewNoopEncryptionService()
 	shadowFlow, _ := NewWithEncryptionService("HUB_NAME", 100, encryptionService)
 
-	currentFlow := func() interface{} {
-		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}
+	currentFlow := func() (interface{}, error) {
+		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
 	}
-	newFlow := func() interface{} {
-		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}
+	newFlow := func() (interface{}, error) {
+		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}, nil
 	}
 
 	shadowFlow.Compare(currentFlow, newFlow)
+	shadowFlow.waitGroup.Wait()
 
 	expectedEncryptedValues, _ := encryptionService.Encrypt("'name' update: 'John' -> 'Doe'\n'birth-date' update: '2024-01-01' -> '2024-01-02'\n'Address.number' update: '18' -> '20'")
 	expectedLogOutput := fmt.Sprintf("[HUB_NAME] The following differences were found: name, birth-date, Address.number. Encrypted values: %s", expectedEncryptedValues)
@@ -126,5 +130,54 @@ func TestEncryptionServiceCannotBeNil(t *testing.T) {
 	_, err := NewWithEncryptionService("HUB_NAME", 100, nil)
 	if err == nil {
 		t.Errorf("Expected error when creating ShadowFlow with nil encryption service")
+	}
+}
+
+func TestMainFlowShouldNotWaitShadowFlow(t *testing.T) {
+	buf := new(bytes.Buffer)
+	logger.SetOutput(buf)
+
+	shadowFlow, _ := New("HUB_NAME", 100)
+
+	currentFlow := func() (interface{}, error) {
+		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
+	}
+	newFlow := func() (interface{}, error) {
+		time.Sleep(1000 * time.Millisecond) // simulate a long running shadow flow
+		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}, nil
+	}
+
+	shadowFlow.Compare(currentFlow, newFlow)
+	shadowFlow.waitGroup.Wait()
+
+	if !strings.Contains(buf.String(), "[HUB_NAME] The following differences were found: name, birth-date, Address.number") {
+		t.Errorf("Expected error message not found in log output")
+	}
+}
+
+func TestShouldDetectDifferencesForSlices(t *testing.T) {
+	buf := new(bytes.Buffer)
+	logger.SetOutput(buf)
+
+	shadowFlow, _ := New("HUB_NAME", 100)
+
+	currentFlow := func() ([]interface{}, error) {
+		return []interface{}{
+			&dummyResponse{Name: "Cristiano Ronaldo", BirthDate: "1985-02-05", Address: address{Number: 7, Street: "Funchal"}},
+			&dummyResponse{Name: "Lionel Messi", BirthDate: "1987-06-24", Address: address{Number: 10, Street: "La Bajada"}},
+		}, nil
+	}
+	newFlow := func() ([]interface{}, error) {
+		return []interface{}{
+			&dummyResponse{Name: "Cristiano Ronaldo", BirthDate: "1985-02-05", Address: address{Number: 19, Street: "Funchal"}},
+			&dummyResponse{Name: "Lionel Mesi", BirthDate: "1997-06-24", Address: address{Number: 10, Street: "La Bajada"}},
+		}, nil
+	}
+
+	shadowFlow.CompareSlices(currentFlow, newFlow)
+	shadowFlow.waitGroup.Wait()
+
+	if !strings.Contains(buf.String(), "[HUB_NAME] The following differences were found: 0.Address.number, 1.name, 1.birth-date") {
+		t.Errorf("Expected error message not found in log output")
 	}
 }

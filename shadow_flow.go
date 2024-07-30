@@ -20,19 +20,17 @@ func init() {
 }
 
 type ShadowFlow struct {
-	instance          string
-	percentage        int
+	instance          string // name of the instance
+	percentage        int    // percentage of the requests that will be shadowed
 	rand              *rand.Rand
-	encryptionService EncryptionService
+	encryptionService EncryptionService // encryptionService encrypting data diff, helps to prevent data leak
+	waitGroup         sync.WaitGroup    // waitGroup take a control over the goroutines
 }
 
 func New(instance string, percentage int) (*ShadowFlow, error) {
-	if instance == "" {
-		return nil, errors.New("instance name must be provided")
-	}
-
-	if percentage < 0 || percentage > 100 {
-		return nil, errors.New("percentage must be between 0 and 100")
+	err := checkArgs(instance, percentage)
+	if err != nil {
+		return nil, err
 	}
 
 	shadowFlow := &ShadowFlow{
@@ -45,12 +43,9 @@ func New(instance string, percentage int) (*ShadowFlow, error) {
 }
 
 func NewWithEncryptionService(instance string, percentage int, encryptionService EncryptionService) (*ShadowFlow, error) {
-	if instance == "" {
-		return nil, errors.New("instance name must be provided")
-	}
-
-	if percentage < 0 || percentage > 100 {
-		return nil, errors.New("percentage must be between 0 and 100")
+	err := checkArgs(instance, percentage)
+	if err != nil {
+		return nil, err
 	}
 
 	if encryptionService == nil {
@@ -67,6 +62,17 @@ func NewWithEncryptionService(instance string, percentage int, encryptionService
 	return shadowFlow, nil
 }
 
+func checkArgs(instance string, percentage int) error {
+	if instance == "" {
+		return errors.New("instance name must be provided")
+	}
+
+	if percentage < 0 || percentage > 100 {
+		return errors.New("percentage must be between 0 and 100")
+	}
+	return nil
+}
+
 // Compare runs the current flow and, based on a random percentage, may also run the new flow.
 // If the new flow is run, it compares the results of the current and new flows, logs the differences,
 // and optionally encrypts and logs the changed values if an encryption service is provided.
@@ -76,57 +82,66 @@ func NewWithEncryptionService(instance string, percentage int, encryptionService
 // newFlow: A function that when called, returns the result of the new flow.
 //
 // Returns: The result of the current flow.
-func (s *ShadowFlow) Compare(currentFlow func() interface{}, newFlow func() interface{}) interface{} {
-	var waitGroup sync.WaitGroup
+func (s *ShadowFlow) Compare(currentFlow func() (interface{}, error), newFlow func() (interface{}, error)) (interface{}, error) {
 	var originalResponse interface{}
-	var shadowResponse interface{}
+	originalResponse, err := currentFlow()
 
-	waitGroup.Add(1)
-	go func() {
-		defer waitGroup.Done()
-		originalResponse = currentFlow()
-	}()
-
-	if s.shouldCallNewFlow() {
+	if s.shouldCallNewFlow() && err == nil {
+		s.waitGroup.Add(1)
 		logger.Printf("[%s] Calling new flow: true", s.instance)
-
-		waitGroup.Add(1)
 		go func() {
-			defer waitGroup.Done()
-			shadowResponse = newFlow()
+			defer s.waitGroup.Done()
+			shadowResponse, shdErr := newFlow()
+			if shadowResponse != nil && shdErr == nil {
+				s.diff(originalResponse, shadowResponse)
+			}
 		}()
 	}
+	return originalResponse, err
+}
 
-	waitGroup.Wait()
+func (s *ShadowFlow) CompareSlices(currentFlow func() ([]interface{}, error), newFlow func() ([]interface{}, error)) ([]interface{}, error) {
+	var originalResponse []interface{}
 
-	if shadowResponse != nil {
-		changelog, err := diff.Diff(originalResponse, shadowResponse)
+	originalResponse, err := currentFlow()
 
-		if err != nil {
-			logger.Printf("[%s] Failed to compare the shadow flow responses, %s", s.instance, err)
-			return originalResponse
-		}
+	if s.shouldCallNewFlow() && err == nil {
+		s.waitGroup.Add(1)
+		logger.Printf("[%s] Calling new flow: true", s.instance)
+		go func() {
+			defer s.waitGroup.Done()
+			shadowResponse, shdErr := newFlow()
+			if shadowResponse != nil && shdErr == nil {
+				s.diff(originalResponse, shadowResponse)
+			}
+		}()
+	}
+	return originalResponse, err
+}
 
-		changedProperties := make([]string, 0)
-		changedValues := make([]string, 0)
+func (s *ShadowFlow) diff(originalResponse interface{}, shadowResponse interface{}) {
+	changelog, err := diff.Diff(originalResponse, shadowResponse)
 
-		for _, change := range changelog {
-			fieldPath := toFullPath(change)
-			changedProperties = append(changedProperties, fieldPath)
-			changedValues = append(changedValues, prettyPrintDiff(fieldPath, change))
-		}
-
-		properties := strings.Join(changedProperties, ", ")
-		if s.encryptionService != nil {
-			encryptedValues, _ := s.encryptionService.Encrypt(strings.Join(changedValues, "\n"))
-			logger.Printf("[%s] The following differences were found: %s. Encrypted values: %s", s.instance, properties, encryptedValues)
-		} else {
-			logger.Printf("[%s] The following differences were found: %s", s.instance, properties)
-		}
+	if err != nil {
+		logger.Printf("[%s] Failed to compare the shadow flow responses, %s", s.instance, err)
 	}
 
-	// todo maybe return an error as well?
-	return originalResponse
+	changedProperties := make([]string, 0)
+	changedValues := make([]string, 0)
+
+	for _, change := range changelog {
+		fieldPath := toFullPath(change)
+		changedProperties = append(changedProperties, fieldPath)
+		changedValues = append(changedValues, prettyPrintDiff(fieldPath, change))
+	}
+
+	properties := strings.Join(changedProperties, ", ")
+	if s.encryptionService != nil {
+		encryptedValues, _ := s.encryptionService.Encrypt(strings.Join(changedValues, "\n"))
+		logger.Printf("[%s] The following differences were found: %s. Encrypted values: %s", s.instance, properties, encryptedValues)
+	} else {
+		logger.Printf("[%s] The following differences were found: %s", s.instance, properties)
+	}
 }
 
 func (s *ShadowFlow) shouldCallNewFlow() bool {
