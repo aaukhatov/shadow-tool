@@ -82,8 +82,8 @@ func checkArgs(instance string, percentage int) error {
 // newFlow: A function that when called, returns the result of the new flow.
 //
 // Returns: The result of the current flow.
-func (s *ShadowFlow[T]) Compare(currentFlow func() (T, error), newFlow func() (T, error)) (T, error) {
-	var originalResponse T
+func (s *ShadowFlow[T]) Compare(currentFlow func() (*T, error), newFlow func() (*T, error)) (*T, error) {
+	var originalResponse *T
 	originalResponse, err := currentFlow()
 
 	if s.shouldCallNewFlow() && err == nil {
@@ -100,8 +100,8 @@ func (s *ShadowFlow[T]) Compare(currentFlow func() (T, error), newFlow func() (T
 	return originalResponse, err
 }
 
-func (s *ShadowFlow[T]) CompareSlices(currentFlow func() ([]T, error), newFlow func() ([]T, error)) ([]T, error) {
-	var originalResponse []T
+func (s *ShadowFlow[T]) CompareSlices(currentFlow func() (*[]T, error), newFlow func() (*[]T, error)) (*[]T, error) {
+	var originalResponse *[]T
 
 	originalResponse, err := currentFlow()
 
