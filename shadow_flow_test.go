@@ -23,12 +23,12 @@ func TestShouldDetectDifferences(t *testing.T) {
 	buf := new(bytes.Buffer)
 	logger.SetOutput(buf)
 
-	shadowFlow, _ := New("HUB_NAME", 100)
+	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100)
 
-	currentFlow := func() (interface{}, error) {
+	currentFlow := func() (*dummyResponse, error) {
 		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
 	}
-	newFlow := func() (interface{}, error) {
+	newFlow := func() (*dummyResponse, error) {
 		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}, nil
 	}
 
@@ -42,15 +42,15 @@ func TestShouldDetectDifferences(t *testing.T) {
 
 func TestCurrentFlowCalledOnce(t *testing.T) {
 	callCount := 0
-	currentFlow := func() (interface{}, error) {
+	currentFlow := func() (*dummyResponse, error) {
 		callCount++
 		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
 	}
-	newFlow := func() (interface{}, error) {
+	newFlow := func() (*dummyResponse, error) {
 		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}, nil
 	}
 
-	shadowFlow, _ := New("HUB_NAME", 100)
+	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100)
 	shadowFlow.Compare(currentFlow, newFlow)
 	shadowFlow.waitGroup.Wait()
 
@@ -61,15 +61,15 @@ func TestCurrentFlowCalledOnce(t *testing.T) {
 
 func TestNewFlowNotCalled(t *testing.T) {
 	callCount := 0
-	currentFlow := func() (interface{}, error) {
+	currentFlow := func() (*dummyResponse, error) {
 		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
 	}
-	newFlow := func() (interface{}, error) {
+	newFlow := func() (*dummyResponse, error) {
 		callCount++
 		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}, nil
 	}
 
-	shadowFlow, _ := New("HUB_NAME", 0) // Set percentage to 0 to ensure newFlow is not called
+	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 0) // Set percentage to 0 to ensure newFlow is not called
 	shadowFlow.Compare(currentFlow, newFlow)
 
 	if callCount != 0 {
@@ -82,12 +82,12 @@ func TestCompareWithNoopEncryptionService(t *testing.T) {
 	logger.SetOutput(buf)
 
 	encryptionService := NewNoopEncryptionService()
-	shadowFlow, _ := NewWithEncryptionService("HUB_NAME", 100, encryptionService)
+	shadowFlow, _ := NewWithEncryptionService[dummyResponse]("HUB_NAME", 100, encryptionService)
 
-	currentFlow := func() (interface{}, error) {
+	currentFlow := func() (*dummyResponse, error) {
 		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
 	}
-	newFlow := func() (interface{}, error) {
+	newFlow := func() (*dummyResponse, error) {
 		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}, nil
 	}
 
@@ -103,31 +103,31 @@ func TestCompareWithNoopEncryptionService(t *testing.T) {
 }
 
 func TestNotAllowedToCreateShadowFlowWithInvalidPercentage(t *testing.T) {
-	_, err := New("HUB_NAME", 101)
+	_, err := New[dummyResponse]("HUB_NAME", 101)
 	if err == nil {
 		t.Errorf("Expected error when creating ShadowFlow with percentage > 100")
 	}
 
-	_, err = New("HUB_NAME", -1)
+	_, err = New[dummyResponse]("HUB_NAME", -1)
 	if err == nil {
 		t.Errorf("Expected error when creating ShadowFlow with percentage < 0")
 	}
 }
 
 func TestInstanceNameMustBeSpecified(t *testing.T) {
-	_, err := New("", 100)
+	_, err := New[dummyResponse]("", 100)
 	if err == nil {
 		t.Errorf("Expected error when creating ShadowFlow without instance name")
 	}
 
-	_, err = NewWithEncryptionService("", 100, NewNoopEncryptionService())
+	_, err = NewWithEncryptionService[dummyResponse]("", 100, NewNoopEncryptionService())
 	if err == nil {
 		t.Errorf("Expected error when creating ShadowFlow without instance name")
 	}
 }
 
 func TestEncryptionServiceCannotBeNil(t *testing.T) {
-	_, err := NewWithEncryptionService("HUB_NAME", 100, nil)
+	_, err := NewWithEncryptionService[dummyResponse]("HUB_NAME", 100, nil)
 	if err == nil {
 		t.Errorf("Expected error when creating ShadowFlow with nil encryption service")
 	}
@@ -137,12 +137,12 @@ func TestMainFlowShouldNotWaitShadowFlow(t *testing.T) {
 	buf := new(bytes.Buffer)
 	logger.SetOutput(buf)
 
-	shadowFlow, _ := New("HUB_NAME", 100)
+	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100)
 
-	currentFlow := func() (interface{}, error) {
+	currentFlow := func() (*dummyResponse, error) {
 		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
 	}
-	newFlow := func() (interface{}, error) {
+	newFlow := func() (*dummyResponse, error) {
 		time.Sleep(1000 * time.Millisecond) // simulate a long running shadow flow
 		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}, nil
 	}
@@ -159,18 +159,18 @@ func TestShouldDetectDifferencesForSlices(t *testing.T) {
 	buf := new(bytes.Buffer)
 	logger.SetOutput(buf)
 
-	shadowFlow, _ := New("HUB_NAME", 100)
+	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100)
 
-	currentFlow := func() ([]interface{}, error) {
-		return []interface{}{
-			&dummyResponse{Name: "Cristiano Ronaldo", BirthDate: "1985-02-05", Address: address{Number: 7, Street: "Funchal"}},
-			&dummyResponse{Name: "Lionel Messi", BirthDate: "1987-06-24", Address: address{Number: 10, Street: "La Bajada"}},
+	currentFlow := func() (*[]dummyResponse, error) {
+		return &[]dummyResponse{
+			{Name: "Cristiano Ronaldo", BirthDate: "1985-02-05", Address: address{Number: 7, Street: "Funchal"}},
+			{Name: "Lionel Messi", BirthDate: "1987-06-24", Address: address{Number: 10, Street: "La Bajada"}},
 		}, nil
 	}
-	newFlow := func() ([]interface{}, error) {
-		return []interface{}{
-			&dummyResponse{Name: "Cristiano Ronaldo", BirthDate: "1985-02-05", Address: address{Number: 19, Street: "Funchal"}},
-			&dummyResponse{Name: "Lionel Mesi", BirthDate: "1997-06-24", Address: address{Number: 10, Street: "La Bajada"}},
+	newFlow := func() (*[]dummyResponse, error) {
+		return &[]dummyResponse{
+			{Name: "Cristiano Ronaldo", BirthDate: "1985-02-05", Address: address{Number: 19, Street: "Funchal"}},
+			{Name: "Lionel Mesi", BirthDate: "1997-06-24", Address: address{Number: 10, Street: "La Bajada"}},
 		}, nil
 	}
 

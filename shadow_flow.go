@@ -19,7 +19,7 @@ func init() {
 	logger = log.New(os.Stdout, "[shadow-flow] ", log.Ldate|log.Ltime|log.Lshortfile)
 }
 
-type ShadowFlow struct {
+type ShadowFlow[T any] struct {
 	instance          string // name of the instance
 	percentage        int    // percentage of the requests that will be shadowed
 	rand              *rand.Rand
@@ -27,13 +27,13 @@ type ShadowFlow struct {
 	waitGroup         sync.WaitGroup    // waitGroup take a control over the goroutines
 }
 
-func New(instance string, percentage int) (*ShadowFlow, error) {
+func New[T any](instance string, percentage int) (*ShadowFlow[T], error) {
 	err := checkArgs(instance, percentage)
 	if err != nil {
 		return nil, err
 	}
 
-	shadowFlow := &ShadowFlow{
+	shadowFlow := &ShadowFlow[T]{
 		instance:   instance,
 		percentage: percentage,
 		rand:       rand.New(rand.NewSource(time.Now().UnixNano())),
@@ -42,7 +42,7 @@ func New(instance string, percentage int) (*ShadowFlow, error) {
 	return shadowFlow, nil
 }
 
-func NewWithEncryptionService(instance string, percentage int, encryptionService EncryptionService) (*ShadowFlow, error) {
+func NewWithEncryptionService[T any](instance string, percentage int, encryptionService EncryptionService) (*ShadowFlow[T], error) {
 	err := checkArgs(instance, percentage)
 	if err != nil {
 		return nil, err
@@ -52,7 +52,7 @@ func NewWithEncryptionService(instance string, percentage int, encryptionService
 		return nil, errors.New("encryptionService cannot be nil")
 	}
 
-	shadowFlow := &ShadowFlow{
+	shadowFlow := &ShadowFlow[T]{
 		instance:          instance,
 		percentage:        percentage,
 		encryptionService: encryptionService,
@@ -82,8 +82,27 @@ func checkArgs(instance string, percentage int) error {
 // newFlow: A function that when called, returns the result of the new flow.
 //
 // Returns: The result of the current flow.
-func (s *ShadowFlow) Compare(currentFlow func() (interface{}, error), newFlow func() (interface{}, error)) (interface{}, error) {
-	var originalResponse interface{}
+func (s *ShadowFlow[T]) Compare(currentFlow func() (*T, error), newFlow func() (*T, error)) (*T, error) {
+	var originalResponse *T
+	originalResponse, err := currentFlow()
+
+	if s.shouldCallNewFlow() && err == nil {
+		s.waitGroup.Add(1)
+		logger.Printf("[%s] Calling new flow: true", s.instance)
+		go func() {
+			defer s.waitGroup.Done()
+			shadowResponse, shdErr := newFlow()
+			if &shadowResponse != nil && shdErr == nil {
+				s.diff(originalResponse, shadowResponse)
+			}
+		}()
+	}
+	return originalResponse, err
+}
+
+func (s *ShadowFlow[T]) CompareSlices(currentFlow func() (*[]T, error), newFlow func() (*[]T, error)) (*[]T, error) {
+	var originalResponse *[]T
+
 	originalResponse, err := currentFlow()
 
 	if s.shouldCallNewFlow() && err == nil {
@@ -100,26 +119,7 @@ func (s *ShadowFlow) Compare(currentFlow func() (interface{}, error), newFlow fu
 	return originalResponse, err
 }
 
-func (s *ShadowFlow) CompareSlices(currentFlow func() ([]interface{}, error), newFlow func() ([]interface{}, error)) ([]interface{}, error) {
-	var originalResponse []interface{}
-
-	originalResponse, err := currentFlow()
-
-	if s.shouldCallNewFlow() && err == nil {
-		s.waitGroup.Add(1)
-		logger.Printf("[%s] Calling new flow: true", s.instance)
-		go func() {
-			defer s.waitGroup.Done()
-			shadowResponse, shdErr := newFlow()
-			if shadowResponse != nil && shdErr == nil {
-				s.diff(originalResponse, shadowResponse)
-			}
-		}()
-	}
-	return originalResponse, err
-}
-
-func (s *ShadowFlow) diff(originalResponse interface{}, shadowResponse interface{}) {
+func (s *ShadowFlow[T]) diff(originalResponse interface{}, shadowResponse interface{}) {
 	changelog, err := diff.Diff(originalResponse, shadowResponse)
 
 	if err != nil {
@@ -144,7 +144,7 @@ func (s *ShadowFlow) diff(originalResponse interface{}, shadowResponse interface
 	}
 }
 
-func (s *ShadowFlow) shouldCallNewFlow() bool {
+func (s *ShadowFlow[T]) shouldCallNewFlow() bool {
 	return s.rand.Intn(100) < s.percentage
 }
 
