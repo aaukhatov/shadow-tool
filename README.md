@@ -1,8 +1,12 @@
 # shadow-tool
 
-Shadow testing for Go. Run a new implementation next to the current one on a slice of real traffic, compare the results in the background, and log what differs — without ever changing what the caller gets back.
+Shadow testing for Go. Run a new implementation next to the current one on a slice of real traffic, compare the results
+in the background, and log what differs — without ever changing what the caller gets back.
 
-The typical use case is replacing something risky: a backend service, a query, a whole code path. You keep serving responses from the current implementation while the new one runs "in the shadow" for a configurable percentage of calls. When the two results diverge, the differing fields are logged, and the actual values can be encrypted first so response data doesn't leak into your logs.
+The typical use case is replacing something risky: a backend service, a query, a whole code path. You keep serving
+responses from the current implementation while the new one runs "in the shadow" for a configurable percentage of calls.
+When the two results diverge, the differing fields are logged, and the actual values can be encrypted first so response
+data doesn't leak into your logs.
 
 ## Requirements
 
@@ -16,9 +20,13 @@ go get github.com/aaukhatov/shadow-tool
 
 ## How it works
 
-`Compare` calls the current flow synchronously and returns its result — always. Then, for the configured percentage of calls, it runs the new flow in a background goroutine, diffs the two results, and logs the paths of the fields that differ. A slow, failing, or even panicking shadow flow never affects the main flow: errors are skipped, panics are recovered and logged.
+`Compare` calls the current flow synchronously and returns its result — always. Then, for the configured percentage of
+calls, it runs the new flow in a background goroutine, diffs the two results, and logs the paths of the fields that
+differ. A slow, failing, or even panicking shadow flow never affects the main flow: errors are skipped, panics are
+recovered and logged.
 
-Without an encryption service only the *names* of the differing fields are logged. If you construct the flow with an encryption service, the old and new *values* are logged too, encrypted.
+Without an encryption service, only the *names* of the differing fields are logged. If you construct the flow with an
+encryption service, the old and new *values* are logged too, encrypted.
 
 ## Usage
 
@@ -77,14 +85,39 @@ func main() {
 }
 ```
 
-A sampled call with a divergence produces log lines like:
+A sampled call with a divergence produces a log line like:
 
 ```
-[shadow-flow] 2024/03/01 12:00:00 shadow_flow.go:90: [payload-service] Calling new flow: true
-[shadow-flow] 2024/03/01 12:00:00 shadow_flow.go:141: [payload-service] The following differences were found: date
+time=2024-03-01T12:00:00.000Z level=INFO msg="differences found" component=shadow-flow instance=payload-service properties=date
 ```
 
 For slices there is `CompareSlices`, with the same behavior.
+
+### Logging
+
+The shadow flow logs through `log/slog`. By default it uses `slog.Default()`, so the output lands wherever your
+application already sends its logs — the library does not impose a destination or a format of its own. The instance name
+is attached as an `instance` attribute rather than interpolated into the message, so you can filter on it.
+
+Three levels are used:
+
+| Level   | Logged                                                                                                  |
+|---------|---------------------------------------------------------------------------------------------------------|
+| `Debug` | Each sampled call, as the shadow flow starts. Off by default; enable it to confirm sampling is working. |
+| `Info`  | The fields that differ, and the encrypted values when an encryption service is configured.              |
+| `Error` | A shadow flow that panicked, and failures to diff the two responses.                                    |
+
+To send the output somewhere other than `slog.Default()`, pass the `WithLogger` option:
+
+```go
+flow, err := shadowflow.New[Payload]("payload-service", 1,
+shadowflow.WithLogger(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))),
+)
+```
+
+Backends other than slog work through their slog bridge — [`zapslog`](https://pkg.go.dev/go.uber.org/zap/exp/zapslog)
+for zap, or the [`samber/slog-*`](https://github.com/samber/slog-zerolog) family for zerolog, logrus and others. No
+adapter code of your own is needed.
 
 ### Logging the differing values, encrypted
 
@@ -92,28 +125,36 @@ To see *what* changed and not just *which fields*, create the flow with an encry
 
 ```go
 service := shadowflow.NewNoopEncryptionService()
-flow, err := shadowflow.NewWithEncryptionService[Payload]("payload-service", 1, service)
+flow, err := shadowflow.New[Payload]("payload-service", 1, shadowflow.WithEncryptionService(service))
 ```
+
+(The older `NewWithEncryptionService` constructor still works and does the same thing.)
 
 Two implementations ship with the package:
 
-* `NewNoopEncryptionService()` — no encryption at all, it only base64-encodes the values. Fine for local development; don't use it where the logs matter, since base64 is trivially reversible.
-* `NewPublicKeyEncryptionService(publicKey)` — encrypts with RSA-OAEP (SHA-256) using your `*rsa.PublicKey`, so only the holder of the private key can read the values. Note that RSA-OAEP caps the message size (about 190 bytes with a 2048-bit key); if a diff is too large to encrypt, the field names are still logged but the values are dropped rather than logged in plain text.
+* `NewNoopEncryptionService()` — no encryption at all, it only base64-encodes the values. Fine for local development;
+  don't use it where the logs matter, since base64 is trivially reversible.
+* `NewPublicKeyEncryptionService(publicKey)` — encrypts with RSA-OAEP (SHA-256) using your `*rsa.PublicKey`, so only the
+  holder of the private key can read the values. Note that RSA-OAEP caps the message size (about 190 bytes with a
+  2048-bit key); if a diff is too large to encrypt, the field names are still logged but the values are dropped rather
+  than logged in plain text.
 
-You can also implement the one-method `EncryptionService` interface yourself, for example to use AES-GCM with a key from your secret manager.
+You can also implement the one-method `EncryptionService` interface yourself, for example to use AES-GCM with a key from
+your secret manager.
 
 ## Contributing
 
-Run the tests with the race detector — the whole point of this library is doing work concurrently, so `-race` is part of the baseline:
+Run the tests with the race detector — the whole point of this library is doing work concurrently, so `-race` is part of
+the baseline:
 
 ```shell
-go test -race ./...
+go test -race
 ```
 
 With a coverage report:
 
 ```shell
-go test -race -cover ./...
+go test -race -cover
 ```
 
 Or an HTML one:

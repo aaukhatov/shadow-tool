@@ -3,9 +3,8 @@ package shadowflow
 import (
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"math/rand/v2"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,50 +12,47 @@ import (
 	"github.com/r3labs/diff/v3"
 )
 
-var logger *log.Logger
-
-func init() {
-	logger = log.New(os.Stdout, "[shadow-flow] ", log.Ldate|log.Ltime|log.Lshortfile)
-}
-
 type ShadowFlow[T any] struct {
-	instance          string            // name of the instance
 	percentage        int               // percentage of the requests that will be shadowed
+	logger            *slog.Logger      // logger receiving the shadow flow output, slog.Default() unless set; carries the instance name
 	encryptionService EncryptionService // encryptionService encrypting data diff, helps to prevent data leak
 	waitGroup         sync.WaitGroup    // waitGroup take a control over the goroutines
 }
 
-func New[T any](instance string, percentage int) (*ShadowFlow[T], error) {
+func New[T any](instance string, percentage int, opts ...Option) (*ShadowFlow[T], error) {
 	err := checkArgs(instance, percentage)
 	if err != nil {
 		return nil, err
 	}
 
+	var cfg config
+	for _, opt := range opts {
+		if err := opt(&cfg); err != nil {
+			return nil, err
+		}
+	}
+
+	logger := cfg.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	// Bind the instance once so every log line carries it as an attribute.
+	logger = logger.With(slog.String("component", "shadow-flow"), slog.String("instance", instance))
+
 	shadowFlow := &ShadowFlow[T]{
-		instance:   instance,
-		percentage: percentage,
+		percentage:        percentage,
+		logger:            logger,
+		encryptionService: cfg.encryptionService,
 	}
 
 	return shadowFlow, nil
 }
 
+// NewWithEncryptionService creates a ShadowFlow that logs the changed values
+// encrypted with the given service. Prefer New with the WithEncryptionService
+// option.
 func NewWithEncryptionService[T any](instance string, percentage int, encryptionService EncryptionService) (*ShadowFlow[T], error) {
-	err := checkArgs(instance, percentage)
-	if err != nil {
-		return nil, err
-	}
-
-	if encryptionService == nil {
-		return nil, errors.New("encryptionService cannot be nil")
-	}
-
-	shadowFlow := &ShadowFlow[T]{
-		instance:          instance,
-		percentage:        percentage,
-		encryptionService: encryptionService,
-	}
-
-	return shadowFlow, nil
+	return New[T](instance, percentage, WithEncryptionService(encryptionService))
 }
 
 func checkArgs(instance string, percentage int) error {
@@ -84,7 +80,7 @@ func (s *ShadowFlow[T]) Compare(currentFlow func() (*T, error), newFlow func() (
 
 	if err == nil && s.shouldCallNewFlow() {
 		s.waitGroup.Add(1)
-		logger.Printf("[%s] Calling new flow: true", s.instance)
+		s.logger.Debug("calling new flow")
 		go func() {
 			defer s.waitGroup.Done()
 			defer s.recoverPanic()
@@ -102,7 +98,7 @@ func (s *ShadowFlow[T]) CompareSlices(currentFlow func() (*[]T, error), newFlow 
 
 	if err == nil && s.shouldCallNewFlow() {
 		s.waitGroup.Add(1)
-		logger.Printf("[%s] Calling new flow: true", s.instance)
+		s.logger.Debug("calling new flow")
 		go func() {
 			defer s.waitGroup.Done()
 			defer s.recoverPanic()
@@ -125,14 +121,14 @@ func (s *ShadowFlow[T]) Wait() {
 // the shadow path must never affect the main flow.
 func (s *ShadowFlow[T]) recoverPanic() {
 	if r := recover(); r != nil {
-		logger.Printf("[%s] Recovered from a panic in the shadow flow: %v", s.instance, r)
+		s.logger.Error("recovered from panic in shadow flow", slog.Any("panic", r))
 	}
 }
 
 func (s *ShadowFlow[T]) diff(originalResponse interface{}, shadowResponse interface{}) {
 	changelog, err := diff.Diff(originalResponse, shadowResponse)
 	if err != nil {
-		logger.Printf("[%s] Failed to compare the shadow flow responses, %s", s.instance, err)
+		s.logger.Error("failed to compare shadow flow responses", slog.Any("error", err))
 		return
 	}
 
@@ -151,17 +147,23 @@ func (s *ShadowFlow[T]) diff(originalResponse interface{}, shadowResponse interf
 
 	properties := strings.Join(changedProperties, ", ")
 	if s.encryptionService == nil {
-		logger.Printf("[%s] The following differences were found: %s", s.instance, properties)
+		s.logger.Info("differences found", slog.String("properties", properties))
 		return
 	}
 
 	encryptedValues, err := s.encryptionService.Encrypt(strings.Join(changedValues, "\n"))
 	if err != nil {
 		// Log only the property names on failure — the values stay confidential.
-		logger.Printf("[%s] The following differences were found: %s. Failed to encrypt the changed values: %s", s.instance, properties, err)
+		s.logger.Info("differences found",
+			slog.String("properties", properties),
+			slog.Any("encrypt_error", err),
+		)
 		return
 	}
-	logger.Printf("[%s] The following differences were found: %s. Encrypted values: %s", s.instance, properties, encryptedValues)
+	s.logger.Info("differences found",
+		slog.String("properties", properties),
+		slog.String("encrypted_values", encryptedValues),
+	)
 }
 
 // shouldCallNewFlow samples the traffic percentage. The top-level math/rand/v2

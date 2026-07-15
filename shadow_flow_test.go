@@ -2,13 +2,33 @@ package shadowflow
 
 import (
 	"bytes"
+	"context"
 	"fmt"
+	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// testLogger returns a logger writing into buf, so tests can assert on the log
+// output of a single ShadowFlow instance. Debug is enabled so that lines logged
+// below the default level stay visible to the assertions.
+func testLogger(buf *bytes.Buffer) *slog.Logger {
+	return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+// assertLogged fails the test unless every substring appears in the log output.
+func assertLogged(t *testing.T, output string, substrs ...string) {
+	t.Helper()
+	for _, substr := range substrs {
+		if !strings.Contains(output, substr) {
+			t.Errorf("Expected %q in the log output, got:\n%s", substr, output)
+		}
+	}
+}
 
 type dummyResponse struct {
 	Name      string `diff:"name"`
@@ -23,9 +43,7 @@ type address struct {
 
 func TestShouldDetectDifferences(t *testing.T) {
 	buf := new(bytes.Buffer)
-	logger.SetOutput(buf)
-
-	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100)
+	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100, WithLogger(testLogger(buf)))
 
 	currentFlow := func() (*dummyResponse, error) {
 		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
@@ -37,9 +55,11 @@ func TestShouldDetectDifferences(t *testing.T) {
 	shadowFlow.Compare(currentFlow, newFlow)
 	shadowFlow.Wait()
 
-	if !strings.Contains(buf.String(), "[HUB_NAME] The following differences were found: name, birth-date, Address.number") {
-		t.Errorf("Expected error message not found in log output")
-	}
+	assertLogged(t, buf.String(),
+		`msg="differences found"`,
+		"instance=HUB_NAME",
+		`properties="name, birth-date, Address.number"`,
+	)
 }
 
 func TestCurrentFlowCalledOnce(t *testing.T) {
@@ -52,7 +72,7 @@ func TestCurrentFlowCalledOnce(t *testing.T) {
 		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}, nil
 	}
 
-	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100)
+	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100, WithLogger(testLogger(new(bytes.Buffer))))
 	shadowFlow.Compare(currentFlow, newFlow)
 	shadowFlow.Wait()
 
@@ -71,7 +91,8 @@ func TestNewFlowNotCalled(t *testing.T) {
 		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}, nil
 	}
 
-	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 0) // Set percentage to 0 to ensure newFlow is not called
+	// Set percentage to 0 to ensure newFlow is not called
+	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 0, WithLogger(testLogger(new(bytes.Buffer))))
 	shadowFlow.Compare(currentFlow, newFlow)
 
 	if callCount != 0 {
@@ -81,10 +102,13 @@ func TestNewFlowNotCalled(t *testing.T) {
 
 func TestCompareWithNoopEncryptionService(t *testing.T) {
 	buf := new(bytes.Buffer)
-	logger.SetOutput(buf)
-
 	encryptionService := NewNoopEncryptionService()
-	shadowFlow, _ := NewWithEncryptionService[dummyResponse]("HUB_NAME", 100, encryptionService)
+	shadowFlow, _ := New[dummyResponse](
+		"HUB_NAME",
+		100,
+		WithLogger(testLogger(buf)),
+		WithEncryptionService(encryptionService),
+	)
 
 	currentFlow := func() (*dummyResponse, error) {
 		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
@@ -97,11 +121,13 @@ func TestCompareWithNoopEncryptionService(t *testing.T) {
 	shadowFlow.Wait()
 
 	expectedEncryptedValues, _ := encryptionService.Encrypt("'name' update: 'John' -> 'Doe'\n'birth-date' update: '2024-01-01' -> '2024-01-02'\n'Address.number' update: '18' -> '20'")
-	expectedLogOutput := fmt.Sprintf("[HUB_NAME] The following differences were found: name, birth-date, Address.number. Encrypted values: %s", expectedEncryptedValues)
 
-	if !strings.Contains(buf.String(), expectedLogOutput) {
-		t.Errorf("Expected log output not found")
-	}
+	assertLogged(t, buf.String(),
+		`msg="differences found"`,
+		`properties="name, birth-date, Address.number"`,
+		// TextHandler quotes the value: base64 contains '=' and '+'.
+		fmt.Sprintf("encrypted_values=%q", expectedEncryptedValues),
+	)
 }
 
 func TestNotAllowedToCreateShadowFlowWithInvalidPercentage(t *testing.T) {
@@ -137,9 +163,7 @@ func TestEncryptionServiceCannotBeNil(t *testing.T) {
 
 func TestMainFlowShouldNotWaitShadowFlow(t *testing.T) {
 	buf := new(bytes.Buffer)
-	logger.SetOutput(buf)
-
-	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100)
+	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100, WithLogger(testLogger(buf)))
 
 	currentFlow := func() (*dummyResponse, error) {
 		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
@@ -160,16 +184,15 @@ func TestMainFlowShouldNotWaitShadowFlow(t *testing.T) {
 
 	shadowFlow.Wait()
 
-	if !strings.Contains(buf.String(), "[HUB_NAME] The following differences were found: name, birth-date, Address.number") {
-		t.Errorf("Expected error message not found in log output")
-	}
+	assertLogged(t, buf.String(),
+		`msg="differences found"`,
+		`properties="name, birth-date, Address.number"`,
+	)
 }
 
 func TestConcurrentCompare(t *testing.T) {
 	buf := new(bytes.Buffer)
-	logger.SetOutput(buf)
-
-	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 50)
+	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 50, WithLogger(testLogger(buf)))
 
 	currentFlow := func() (*dummyResponse, error) {
 		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
@@ -198,9 +221,7 @@ func TestConcurrentCompare(t *testing.T) {
 
 func TestShadowFlowPanicDoesNotCrashMainFlow(t *testing.T) {
 	buf := new(bytes.Buffer)
-	logger.SetOutput(buf)
-
-	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100)
+	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100, WithLogger(testLogger(buf)))
 
 	currentFlow := func() (*dummyResponse, error) {
 		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
@@ -216,16 +237,16 @@ func TestShadowFlowPanicDoesNotCrashMainFlow(t *testing.T) {
 		t.Errorf("Expected the current flow response despite the shadow flow panic, got %v, %v", response, err)
 	}
 
-	if !strings.Contains(buf.String(), "[HUB_NAME] Recovered from a panic in the shadow flow: shadow flow blew up") {
-		t.Errorf("Expected the shadow flow panic to be logged")
-	}
+	assertLogged(t, buf.String(),
+		"level=ERROR",
+		`msg="recovered from panic in shadow flow"`,
+		`panic="shadow flow blew up"`,
+	)
 }
 
 func TestWaitDrainsShadowFlows(t *testing.T) {
 	buf := new(bytes.Buffer)
-	logger.SetOutput(buf)
-
-	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100)
+	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100, WithLogger(testLogger(buf)))
 
 	var shadowFinished atomic.Bool
 	currentFlow := func() (*dummyResponse, error) {
@@ -244,16 +265,12 @@ func TestWaitDrainsShadowFlows(t *testing.T) {
 		t.Errorf("Expected Wait to block until the shadow flow finished")
 	}
 
-	if !strings.Contains(buf.String(), "[HUB_NAME] The following differences were found: name") {
-		t.Errorf("Expected the diff to be logged before Wait returned")
-	}
+	assertLogged(t, buf.String(), `msg="differences found"`, "properties=name")
 }
 
 func TestShouldDetectDifferencesForSlices(t *testing.T) {
 	buf := new(bytes.Buffer)
-	logger.SetOutput(buf)
-
-	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100)
+	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100, WithLogger(testLogger(buf)))
 
 	currentFlow := func() (*[]dummyResponse, error) {
 		return &[]dummyResponse{
@@ -271,7 +288,150 @@ func TestShouldDetectDifferencesForSlices(t *testing.T) {
 	shadowFlow.CompareSlices(currentFlow, newFlow)
 	shadowFlow.Wait()
 
-	if !strings.Contains(buf.String(), "[HUB_NAME] The following differences were found: 0.Address.number, 1.name, 1.birth-date") {
-		t.Errorf("Expected error message not found in log output")
+	assertLogged(t, buf.String(),
+		`msg="differences found"`,
+		`properties="0.Address.number, 1.name, 1.birth-date"`,
+	)
+}
+
+// capturingHandler records every log record it receives, so tests can assert on
+// structured output rather than on a rendered line. Handlers derived via
+// WithAttrs share the parent's store — ShadowFlow binds attributes with
+// logger.With, so the records would otherwise land somewhere the test cannot see.
+type capturingHandler struct {
+	store *recordStore
+	attrs []slog.Attr
+}
+
+type recordStore struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func newCapturingHandler() *capturingHandler {
+	return &capturingHandler{store: &recordStore{}}
+}
+
+func (h *capturingHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *capturingHandler) Handle(_ context.Context, record slog.Record) error {
+	// Fold in the attrs bound via WithAttrs so the caller sees one flat record.
+	record.AddAttrs(h.attrs...)
+
+	h.store.mu.Lock()
+	defer h.store.mu.Unlock()
+	h.store.records = append(h.store.records, record)
+	return nil
+}
+
+func (h *capturingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &capturingHandler{store: h.store, attrs: append(slices.Clip(h.attrs), attrs...)}
+}
+
+func (h *capturingHandler) WithGroup(string) slog.Handler { return h }
+
+// attr returns the value of the named attribute on the first record whose
+// message matches, and whether it was found.
+func (h *capturingHandler) attr(msg, key string) (string, bool) {
+	h.store.mu.Lock()
+	defer h.store.mu.Unlock()
+	for _, record := range h.store.records {
+		if record.Message != msg {
+			continue
+		}
+		var value string
+		var found bool
+		record.Attrs(func(a slog.Attr) bool {
+			if a.Key == key {
+				value, found = a.Value.String(), true
+				return false
+			}
+			return true
+		})
+		if found {
+			return value, true
+		}
+	}
+	return "", false
+}
+
+func TestWithLoggerReceivesShadowFlowOutput(t *testing.T) {
+	handler := newCapturingHandler()
+	shadowFlow, err := New[dummyResponse]("HUB_NAME", 100, WithLogger(slog.New(handler)))
+	if err != nil {
+		t.Fatalf("Expected no error from New with WithLogger, got %v", err)
+	}
+
+	currentFlow := func() (*dummyResponse, error) {
+		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
+	}
+	newFlow := func() (*dummyResponse, error) {
+		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
+	}
+
+	shadowFlow.Compare(currentFlow, newFlow)
+	shadowFlow.Wait()
+
+	properties, found := handler.attr("differences found", "properties")
+	if !found {
+		t.Fatalf("Expected the diff to be logged to the custom logger")
+	}
+	if properties != "name" {
+		t.Errorf("Expected properties=name, got %q", properties)
+	}
+
+	// The instance belongs in an attribute, not interpolated into the message.
+	if instance, _ := handler.attr("differences found", "instance"); instance != "HUB_NAME" {
+		t.Errorf("Expected instance=HUB_NAME as an attribute, got %q", instance)
+	}
+}
+
+func TestDefaultLoggerUsedWithoutOption(t *testing.T) {
+	shadowFlow, err := New[dummyResponse]("HUB_NAME", 100)
+	if err != nil {
+		t.Fatalf("Expected no error from New without options, got %v", err)
+	}
+
+	if shadowFlow.logger == nil {
+		t.Errorf("Expected the default logger to be set when WithLogger is not used")
+	}
+}
+
+func TestWithLoggerCannotBeNil(t *testing.T) {
+	_, err := New[dummyResponse]("HUB_NAME", 100, WithLogger(nil))
+	if err == nil {
+		t.Errorf("Expected error when creating ShadowFlow with a nil logger")
+	}
+}
+
+func TestWithEncryptionServiceCannotBeNil(t *testing.T) {
+	_, err := New[dummyResponse]("HUB_NAME", 100, WithEncryptionService(nil))
+	if err == nil {
+		t.Errorf("Expected error when creating ShadowFlow with a nil encryption service")
+	}
+}
+
+func TestFirstFailingOptionIsReported(t *testing.T) {
+	_, err := New[dummyResponse]("HUB_NAME", 100, WithLogger(nil), WithEncryptionService(nil))
+	if err == nil {
+		t.Fatalf("Expected error when creating ShadowFlow with two invalid options")
+	}
+
+	if !strings.Contains(err.Error(), "logger cannot be nil") {
+		t.Errorf("Expected the first failing option to be reported, got %v", err)
+	}
+}
+
+func TestNewWithEncryptionServiceBackwardCompatible(t *testing.T) {
+	shadowFlow, err := NewWithEncryptionService[dummyResponse]("HUB_NAME", 100, NewNoopEncryptionService())
+	if err != nil {
+		t.Fatalf("Expected no error from NewWithEncryptionService, got %v", err)
+	}
+
+	if shadowFlow.encryptionService == nil {
+		t.Errorf("Expected the encryption service to be set")
+	}
+	if shadowFlow.logger == nil {
+		t.Errorf("Expected the default logger to be set")
 	}
 }
