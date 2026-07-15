@@ -1,7 +1,7 @@
 # shadow-tool
 
 Shadow testing for Go. Run a new implementation next to the current one on a slice of real traffic, compare the results
-in the background, and log what differs — without ever changing what the caller gets back.
+in the background, and log what differs - without ever changing what the caller gets back.
 
 The typical use case is replacing something risky: a backend service, a query, a whole code path. You keep serving
 responses from the current implementation while the new one runs "in the shadow" for a configurable percentage of calls.
@@ -20,7 +20,7 @@ go get github.com/aaukhatov/shadow-tool
 
 ## How it works
 
-`Compare` calls the current flow synchronously and returns its result — always. Then, for the configured percentage of
+`Compare` calls the current flow synchronously and returns its result - always. Then, for the configured percentage of
 calls, it runs the new flow in a background goroutine, diffs the two results, and logs the paths of the fields that
 differ. A slow, failing, or even panicking shadow flow never affects the main flow: errors are skipped, panics are
 recovered and logged.
@@ -96,7 +96,7 @@ For slices there is `CompareSlices`, with the same behavior.
 ### Logging
 
 The shadow flow logs through `log/slog`. By default it uses `slog.Default()`, so the output lands wherever your
-application already sends its logs — the library does not impose a destination or a format of its own. The instance name
+application already sends its logs - the library does not impose a destination or a format of its own. The instance name
 is attached as an `instance` attribute rather than interpolated into the message, so you can filter on it.
 
 Three levels are used:
@@ -115,7 +115,7 @@ shadowflow.WithLogger(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptio
 )
 ```
 
-Backends other than slog work through their slog bridge — [`zapslog`](https://pkg.go.dev/go.uber.org/zap/exp/zapslog)
+Backends other than slog work through their slog bridge - [`zapslog`](https://pkg.go.dev/go.uber.org/zap/exp/zapslog)
 for zap, or the [`samber/slog-*`](https://github.com/samber/slog-zerolog) family for zerolog, logrus and others. No
 adapter code of your own is needed.
 
@@ -132,9 +132,9 @@ flow, err := shadowflow.New[Payload]("payload-service", 1, shadowflow.WithEncryp
 
 Two implementations ship with the package:
 
-* `NewNoopEncryptionService()` — no encryption at all, it only base64-encodes the values. Fine for local development;
+* `NewNoopEncryptionService()` - no encryption at all, it only base64-encodes the values. Fine for local development;
   don't use it where the logs matter, since base64 is trivially reversible.
-* `NewPublicKeyEncryptionService(publicKey)` — encrypts with RSA-OAEP (SHA-256) using your `*rsa.PublicKey`, so only the
+* `NewPublicKeyEncryptionService(publicKey)` - encrypts with RSA-OAEP (SHA-256) using your `*rsa.PublicKey`, so only the
   holder of the private key can read the values. Note that RSA-OAEP caps the message size (about 190 bytes with a
   2048-bit key); if a diff is too large to encrypt, the field names are still logged but the values are dropped rather
   than logged in plain text.
@@ -144,7 +144,7 @@ your secret manager.
 
 ## Contributing
 
-Run the tests with the race detector — the whole point of this library is doing work concurrently, so `-race` is part of
+Run the tests with the race detector - the whole point of this library is doing work concurrently, so `-race` is part of
 the baseline:
 
 ```shell
