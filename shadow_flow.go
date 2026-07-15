@@ -3,14 +3,14 @@ package shadowflow
 import (
 	"errors"
 	"fmt"
-	"github.com/r3labs/diff/v3"
 	"log"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
-	"time"
+
+	"github.com/r3labs/diff/v3"
 )
 
 var logger *log.Logger
@@ -20,9 +20,8 @@ func init() {
 }
 
 type ShadowFlow[T any] struct {
-	instance          string // name of the instance
-	percentage        int    // percentage of the requests that will be shadowed
-	rand              *rand.Rand
+	instance          string            // name of the instance
+	percentage        int               // percentage of the requests that will be shadowed
 	encryptionService EncryptionService // encryptionService encrypting data diff, helps to prevent data leak
 	waitGroup         sync.WaitGroup    // waitGroup take a control over the goroutines
 }
@@ -36,7 +35,6 @@ func New[T any](instance string, percentage int) (*ShadowFlow[T], error) {
 	shadowFlow := &ShadowFlow[T]{
 		instance:   instance,
 		percentage: percentage,
-		rand:       rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 
 	return shadowFlow, nil
@@ -56,7 +54,6 @@ func NewWithEncryptionService[T any](instance string, percentage int, encryption
 		instance:          instance,
 		percentage:        percentage,
 		encryptionService: encryptionService,
-		rand:              rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 
 	return shadowFlow, nil
@@ -83,33 +80,14 @@ func checkArgs(instance string, percentage int) error {
 //
 // Returns: The result of the current flow.
 func (s *ShadowFlow[T]) Compare(currentFlow func() (*T, error), newFlow func() (*T, error)) (*T, error) {
-	var originalResponse *T
 	originalResponse, err := currentFlow()
 
-	if s.shouldCallNewFlow() && err == nil {
+	if err == nil && s.shouldCallNewFlow() {
 		s.waitGroup.Add(1)
 		logger.Printf("[%s] Calling new flow: true", s.instance)
 		go func() {
 			defer s.waitGroup.Done()
-			shadowResponse, shdErr := newFlow()
-			if &shadowResponse != nil && shdErr == nil {
-				s.diff(originalResponse, shadowResponse)
-			}
-		}()
-	}
-	return originalResponse, err
-}
-
-func (s *ShadowFlow[T]) CompareSlices(currentFlow func() (*[]T, error), newFlow func() (*[]T, error)) (*[]T, error) {
-	var originalResponse *[]T
-
-	originalResponse, err := currentFlow()
-
-	if s.shouldCallNewFlow() && err == nil {
-		s.waitGroup.Add(1)
-		logger.Printf("[%s] Calling new flow: true", s.instance)
-		go func() {
-			defer s.waitGroup.Done()
+			defer s.recoverPanic()
 			shadowResponse, shdErr := newFlow()
 			if shadowResponse != nil && shdErr == nil {
 				s.diff(originalResponse, shadowResponse)
@@ -119,11 +97,47 @@ func (s *ShadowFlow[T]) CompareSlices(currentFlow func() (*[]T, error), newFlow 
 	return originalResponse, err
 }
 
+func (s *ShadowFlow[T]) CompareSlices(currentFlow func() (*[]T, error), newFlow func() (*[]T, error)) (*[]T, error) {
+	originalResponse, err := currentFlow()
+
+	if err == nil && s.shouldCallNewFlow() {
+		s.waitGroup.Add(1)
+		logger.Printf("[%s] Calling new flow: true", s.instance)
+		go func() {
+			defer s.waitGroup.Done()
+			defer s.recoverPanic()
+			shadowResponse, shdErr := newFlow()
+			if shadowResponse != nil && shdErr == nil {
+				s.diff(originalResponse, shadowResponse)
+			}
+		}()
+	}
+	return originalResponse, err
+}
+
+// Wait blocks until every in-flight shadow comparison has finished.
+// Call it on graceful shutdown so pending diffs are not lost when the process exits.
+func (s *ShadowFlow[T]) Wait() {
+	s.waitGroup.Wait()
+}
+
+// recoverPanic keeps a panicking shadow flow from crashing the host application:
+// the shadow path must never affect the main flow.
+func (s *ShadowFlow[T]) recoverPanic() {
+	if r := recover(); r != nil {
+		logger.Printf("[%s] Recovered from a panic in the shadow flow: %v", s.instance, r)
+	}
+}
+
 func (s *ShadowFlow[T]) diff(originalResponse interface{}, shadowResponse interface{}) {
 	changelog, err := diff.Diff(originalResponse, shadowResponse)
-
 	if err != nil {
 		logger.Printf("[%s] Failed to compare the shadow flow responses, %s", s.instance, err)
+		return
+	}
+
+	if len(changelog) == 0 {
+		return
 	}
 
 	changedProperties := make([]string, 0)
@@ -136,16 +150,24 @@ func (s *ShadowFlow[T]) diff(originalResponse interface{}, shadowResponse interf
 	}
 
 	properties := strings.Join(changedProperties, ", ")
-	if s.encryptionService != nil {
-		encryptedValues, _ := s.encryptionService.Encrypt(strings.Join(changedValues, "\n"))
-		logger.Printf("[%s] The following differences were found: %s. Encrypted values: %s", s.instance, properties, encryptedValues)
-	} else {
+	if s.encryptionService == nil {
 		logger.Printf("[%s] The following differences were found: %s", s.instance, properties)
+		return
 	}
+
+	encryptedValues, err := s.encryptionService.Encrypt(strings.Join(changedValues, "\n"))
+	if err != nil {
+		// Log only the property names on failure — the values stay confidential.
+		logger.Printf("[%s] The following differences were found: %s. Failed to encrypt the changed values: %s", s.instance, properties, err)
+		return
+	}
+	logger.Printf("[%s] The following differences were found: %s. Encrypted values: %s", s.instance, properties, encryptedValues)
 }
 
+// shouldCallNewFlow samples the traffic percentage. The top-level math/rand/v2
+// functions are safe for concurrent use, unlike a seeded *rand.Rand instance.
 func (s *ShadowFlow[T]) shouldCallNewFlow() bool {
-	return s.rand.Intn(100) < s.percentage
+	return rand.IntN(100) < s.percentage
 }
 
 func prettyPrintDiff(fieldPath string, change diff.Change) string {

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -33,7 +35,7 @@ func TestShouldDetectDifferences(t *testing.T) {
 	}
 
 	shadowFlow.Compare(currentFlow, newFlow)
-	shadowFlow.waitGroup.Wait()
+	shadowFlow.Wait()
 
 	if !strings.Contains(buf.String(), "[HUB_NAME] The following differences were found: name, birth-date, Address.number") {
 		t.Errorf("Expected error message not found in log output")
@@ -52,7 +54,7 @@ func TestCurrentFlowCalledOnce(t *testing.T) {
 
 	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100)
 	shadowFlow.Compare(currentFlow, newFlow)
-	shadowFlow.waitGroup.Wait()
+	shadowFlow.Wait()
 
 	if callCount != 1 {
 		t.Errorf("Expected currentFlow to be called once, but it was called %d times", callCount)
@@ -92,7 +94,7 @@ func TestCompareWithNoopEncryptionService(t *testing.T) {
 	}
 
 	shadowFlow.Compare(currentFlow, newFlow)
-	shadowFlow.waitGroup.Wait()
+	shadowFlow.Wait()
 
 	expectedEncryptedValues, _ := encryptionService.Encrypt("'name' update: 'John' -> 'Doe'\n'birth-date' update: '2024-01-01' -> '2024-01-02'\n'Address.number' update: '18' -> '20'")
 	expectedLogOutput := fmt.Sprintf("[HUB_NAME] The following differences were found: name, birth-date, Address.number. Encrypted values: %s", expectedEncryptedValues)
@@ -147,11 +149,103 @@ func TestMainFlowShouldNotWaitShadowFlow(t *testing.T) {
 		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}, nil
 	}
 
+	start := time.Now()
 	shadowFlow.Compare(currentFlow, newFlow)
-	shadowFlow.waitGroup.Wait()
+	elapsed := time.Since(start)
+
+	// The shadow flow sleeps for 1s; Compare must return well before that.
+	if elapsed > 200*time.Millisecond {
+		t.Errorf("Expected Compare to return without waiting for the shadow flow, but it took %v", elapsed)
+	}
+
+	shadowFlow.Wait()
 
 	if !strings.Contains(buf.String(), "[HUB_NAME] The following differences were found: name, birth-date, Address.number") {
 		t.Errorf("Expected error message not found in log output")
+	}
+}
+
+func TestConcurrentCompare(t *testing.T) {
+	buf := new(bytes.Buffer)
+	logger.SetOutput(buf)
+
+	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 50)
+
+	currentFlow := func() (*dummyResponse, error) {
+		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
+	}
+	newFlow := func() (*dummyResponse, error) {
+		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}, nil
+	}
+
+	var callers sync.WaitGroup
+	for range 100 {
+		callers.Add(1)
+		go func() {
+			defer callers.Done()
+			response, err := shadowFlow.Compare(currentFlow, newFlow)
+			if err != nil {
+				t.Errorf("Expected no error from Compare, got %v", err)
+			}
+			if response == nil || response.Name != "John" {
+				t.Errorf("Expected the current flow response, got %v", response)
+			}
+		}()
+	}
+	callers.Wait()
+	shadowFlow.Wait()
+}
+
+func TestShadowFlowPanicDoesNotCrashMainFlow(t *testing.T) {
+	buf := new(bytes.Buffer)
+	logger.SetOutput(buf)
+
+	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100)
+
+	currentFlow := func() (*dummyResponse, error) {
+		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
+	}
+	newFlow := func() (*dummyResponse, error) {
+		panic("shadow flow blew up")
+	}
+
+	response, err := shadowFlow.Compare(currentFlow, newFlow)
+	shadowFlow.Wait()
+
+	if err != nil || response == nil || response.Name != "John" {
+		t.Errorf("Expected the current flow response despite the shadow flow panic, got %v, %v", response, err)
+	}
+
+	if !strings.Contains(buf.String(), "[HUB_NAME] Recovered from a panic in the shadow flow: shadow flow blew up") {
+		t.Errorf("Expected the shadow flow panic to be logged")
+	}
+}
+
+func TestWaitDrainsShadowFlows(t *testing.T) {
+	buf := new(bytes.Buffer)
+	logger.SetOutput(buf)
+
+	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100)
+
+	var shadowFinished atomic.Bool
+	currentFlow := func() (*dummyResponse, error) {
+		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
+	}
+	newFlow := func() (*dummyResponse, error) {
+		time.Sleep(100 * time.Millisecond)
+		shadowFinished.Store(true)
+		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
+	}
+
+	shadowFlow.Compare(currentFlow, newFlow)
+	shadowFlow.Wait()
+
+	if !shadowFinished.Load() {
+		t.Errorf("Expected Wait to block until the shadow flow finished")
+	}
+
+	if !strings.Contains(buf.String(), "[HUB_NAME] The following differences were found: name") {
+		t.Errorf("Expected the diff to be logged before Wait returned")
 	}
 }
 
@@ -175,7 +269,7 @@ func TestShouldDetectDifferencesForSlices(t *testing.T) {
 	}
 
 	shadowFlow.CompareSlices(currentFlow, newFlow)
-	shadowFlow.waitGroup.Wait()
+	shadowFlow.Wait()
 
 	if !strings.Contains(buf.String(), "[HUB_NAME] The following differences were found: 0.Address.number, 1.name, 1.birth-date") {
 		t.Errorf("Expected error message not found in log output")
