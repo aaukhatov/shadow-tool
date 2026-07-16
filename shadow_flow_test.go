@@ -218,14 +218,14 @@ func TestInstanceNameMustBeSpecified(t *testing.T) {
 		t.Errorf("Expected error when creating ShadowFlow without instance name")
 	}
 
-	_, err = NewWithEncryptionService[dummyResponse]("", 100, NewNoopEncryptionService())
+	_, err = New[dummyResponse]("", 100, WithEncryptionService(NewNoopEncryptionService()))
 	if err == nil {
 		t.Errorf("Expected error when creating ShadowFlow without instance name")
 	}
 }
 
 func TestEncryptionServiceCannotBeNil(t *testing.T) {
-	_, err := NewWithEncryptionService[dummyResponse]("HUB_NAME", 100, nil)
+	_, err := New[dummyResponse]("HUB_NAME", 100, WithEncryptionService(nil))
 	if err == nil {
 		t.Errorf("Expected error when creating ShadowFlow with nil encryption service")
 	}
@@ -342,14 +342,14 @@ func TestShouldDetectDifferencesForSlices(t *testing.T) {
 	buf := new(bytes.Buffer)
 	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100, WithLogger(testLogger(buf)))
 
-	currentFlow := func(context.Context) (*[]dummyResponse, error) {
-		return &[]dummyResponse{
+	currentFlow := func(context.Context) ([]dummyResponse, error) {
+		return []dummyResponse{
 			{Name: "Cristiano Ronaldo", BirthDate: "1985-02-05", Address: address{Number: 7, Street: "Funchal"}},
 			{Name: "Lionel Messi", BirthDate: "1987-06-24", Address: address{Number: 10, Street: "La Bajada"}},
 		}, nil
 	}
-	newFlow := func(context.Context) (*[]dummyResponse, error) {
-		return &[]dummyResponse{
+	newFlow := func(context.Context) ([]dummyResponse, error) {
+		return []dummyResponse{
 			{Name: "Cristiano Ronaldo", BirthDate: "1985-02-05", Address: address{Number: 19, Street: "Funchal"}},
 			{Name: "Lionel Mesi", BirthDate: "1997-06-24", Address: address{Number: 10, Street: "La Bajada"}},
 		}, nil
@@ -669,19 +669,5 @@ func TestWithMaxConcurrentShadowsMustBePositive(t *testing.T) {
 	_, err := New[dummyResponse]("HUB_NAME", 100, WithMaxConcurrentShadows(0))
 	if err == nil {
 		t.Errorf("Expected error when creating ShadowFlow with a non-positive concurrency limit")
-	}
-}
-
-func TestNewWithEncryptionServiceBackwardCompatible(t *testing.T) {
-	shadowFlow, err := NewWithEncryptionService[dummyResponse]("HUB_NAME", 100, NewNoopEncryptionService())
-	if err != nil {
-		t.Fatalf("Expected no error from NewWithEncryptionService, got %v", err)
-	}
-
-	if shadowFlow.encryptionService == nil {
-		t.Errorf("Expected the encryption service to be set")
-	}
-	if shadowFlow.logger == nil {
-		t.Errorf("Expected the default logger to be set")
 	}
 }

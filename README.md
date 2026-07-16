@@ -100,7 +100,8 @@ A sampled call with a divergence produces a log line like:
 time=2024-03-01T12:00:00.000Z level=INFO msg="differences found" component=shadow-flow instance=payload-service properties=date
 ```
 
-For slices there is `CompareSlices`, with the same behavior.
+For slice-returning flows there is `CompareSlices`, with the same behavior but flows shaped
+`func(context.Context) ([]T, error)`.
 
 ### Logging
 
@@ -137,8 +138,6 @@ To see *what* changed and not just *which fields*, create the flow with an encry
 service := shadowflow.NewNoopEncryptionService()
 flow, err := shadowflow.New[Payload]("payload-service", 1, shadowflow.WithEncryptionService(service))
 ```
-
-(The older `NewWithEncryptionService` constructor still works and does the same thing.)
 
 Two implementations ship with the package:
 

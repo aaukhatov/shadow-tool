@@ -29,7 +29,7 @@ type ShadowFlow[T any] struct {
 	shadowTimeout       time.Duration     // shadowTimeout bounds each shadow flow call, no timeout unless set
 	plaintextProperties bool              // plaintextProperties keeps the differing field paths in plain text next to the encrypted values
 	semaphore           chan struct{}     // semaphore caps the number of concurrent shadow flows
-	waitGroup           sync.WaitGroup    // waitGroup take a control over the goroutines
+	waitGroup           sync.WaitGroup    // waitGroup tracks in-flight shadow goroutines for Wait
 }
 
 // New creates a ShadowFlow for the given instance name, sampling percentage
@@ -71,13 +71,6 @@ func New[T any](instance string, percentage int, opts ...Option) (*ShadowFlow[T]
 	return shadowFlow, nil
 }
 
-// NewWithEncryptionService creates a ShadowFlow that logs the changed values
-// encrypted with the given service. Prefer New with the WithEncryptionService
-// option.
-func NewWithEncryptionService[T any](instance string, percentage int, encryptionService EncryptionService) (*ShadowFlow[T], error) {
-	return New[T](instance, percentage, WithEncryptionService(encryptionService))
-}
-
 func checkArgs(instance string, percentage int) error {
 	if instance == "" {
 		return errors.New("instance name must be provided")
@@ -115,8 +108,19 @@ func (s *ShadowFlow[T]) Compare(ctx context.Context, currentFlow, newFlow func(c
 // CompareSlices is the slice-returning counterpart to Compare: it runs
 // currentFlow, samples the traffic percentage to decide whether to also run
 // newFlow, and logs the differences between the two slice results.
-func (s *ShadowFlow[T]) CompareSlices(ctx context.Context, currentFlow, newFlow func(context.Context) (*[]T, error)) (*[]T, error) {
-	return compareFlows(ctx, s, currentFlow, newFlow)
+func (s *ShadowFlow[T]) CompareSlices(ctx context.Context, currentFlow, newFlow func(context.Context) ([]T, error)) ([]T, error) {
+	toPointerFlow := func(flow func(context.Context) ([]T, error)) func(context.Context) (*[]T, error) {
+		return func(ctx context.Context) (*[]T, error) {
+			result, err := flow(ctx)
+			return &result, err
+		}
+	}
+
+	result, err := compareFlows(ctx, s, toPointerFlow(currentFlow), toPointerFlow(newFlow))
+	if result == nil {
+		return nil, err
+	}
+	return *result, err
 }
 
 // compareFlows carries the shared Compare/CompareSlices implementation; it is
@@ -225,7 +229,7 @@ func (s *ShadowFlow[T]) recoverPanic() {
 	}
 }
 
-func (s *ShadowFlow[T]) diff(originalResponse, shadowResponse interface{}) {
+func (s *ShadowFlow[T]) diff(originalResponse, shadowResponse any) {
 	changelog, err := diff.Diff(originalResponse, shadowResponse)
 	if err != nil {
 		s.logger.Error("failed to compare shadow flow responses", slog.Any("error", err))
@@ -286,7 +290,7 @@ func toFullPath(change diff.Change) string {
 	return strings.Join(change.Path, ".")
 }
 
-func toString(value interface{}) string {
+func toString(value any) string {
 	switch v := value.(type) {
 	case int:
 		return strconv.Itoa(v)
