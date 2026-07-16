@@ -104,8 +104,8 @@ func checkArgs(instance string, percentage int) error {
 // that survive encoding/json are reported: unexported fields and fields
 // tagged `json:"-"` are never compared.
 //
-// currentFlow: A function that when called, returns the result of the current flow.
-// newFlow: A function that when called, returns the result of the new flow.
+// currentFlow: A function that when called with ctx, returns the result of the current flow.
+// newFlow: A function that when called with ctx, returns the result of the new flow.
 //
 // Returns: The result of the current flow.
 func (s *ShadowFlow[T]) Compare(ctx context.Context, currentFlow, newFlow func(context.Context) (*T, error)) (*T, error) {
