@@ -18,13 +18,35 @@ func TestNoopEncryptAndDecrypt(t *testing.T) {
 	}
 }
 
+func TestPublicKeyCannotBeNil(t *testing.T) {
+	_, err := NewPublicKeyEncryptionService(nil)
+	if err == nil {
+		t.Errorf("Expected error when creating the encryption service with a nil public key")
+	}
+}
+
+func TestPublicKeyMustBeAtLeast2048Bits(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 1024) //nolint:gosec // deliberately weak key: rejecting it is the case under test
+	if err != nil {
+		t.Fatalf("Failed to generate RSA keys %v", err)
+	}
+
+	_, err = NewPublicKeyEncryptionService(&privateKey.PublicKey)
+	if err == nil {
+		t.Errorf("Expected error when creating the encryption service with a 1024-bit public key")
+	}
+}
+
 func TestShouldDecryptEncodedText(t *testing.T) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Errorf("Failed to generate RSA keys %v", err)
 	}
 
-	publicKeyEncryption := NewPublicKeyEncryptionService(&privateKey.PublicKey)
+	publicKeyEncryption, err := NewPublicKeyEncryptionService(&privateKey.PublicKey)
+	if err != nil {
+		t.Fatalf("Failed to create the encryption service %v", err)
+	}
 
 	diffResult := "'name' update: 'John' -> 'Doe'\n'birth-date' update: '2024-01-01' -> '2024-01-02'\n'Address.number' update: '18' -> '20'"
 

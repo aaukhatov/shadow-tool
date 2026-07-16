@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"fmt"
 )
 
 // EncryptionService encrypts the diff values logged by a ShadowFlow so they
@@ -42,9 +43,16 @@ type PublicKeyEncryptionService struct {
 }
 
 // NewPublicKeyEncryptionService creates a PublicKeyEncryptionService that
-// encrypts with the given RSA public key.
-func NewPublicKeyEncryptionService(publicKey *rsa.PublicKey) *PublicKeyEncryptionService {
-	return &PublicKeyEncryptionService{publicKey: publicKey}
+// encrypts with the given RSA public key. The key must be at least 2048 bits;
+// smaller RSA keys provide inadequate encryption strength.
+func NewPublicKeyEncryptionService(publicKey *rsa.PublicKey) (*PublicKeyEncryptionService, error) {
+	if publicKey == nil {
+		return nil, errors.New("public key cannot be nil")
+	}
+	if bits := publicKey.N.BitLen(); bits < 2048 {
+		return nil, fmt.Errorf("public key must be at least 2048 bits, got %d", bits)
+	}
+	return &PublicKeyEncryptionService{publicKey: publicKey}, nil
 }
 
 // Encrypt encrypts plainText with RSA-OAEP using the configured public key

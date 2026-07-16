@@ -1,6 +1,8 @@
 package shadowflow
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -8,17 +10,26 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/r3labs/diff/v3"
 )
 
+// defaultMaxConcurrentShadows caps the number of in-flight shadow flows when
+// WithMaxConcurrentShadows is not set, so a slow new flow under high traffic
+// cannot accumulate goroutines without bound.
+const defaultMaxConcurrentShadows = 100
+
 // ShadowFlow runs a new code path alongside an existing one on a sample of
 // traffic, diffs their results, and logs what changed.
 type ShadowFlow[T any] struct {
-	percentage        int               // percentage of the requests that will be shadowed
-	logger            *slog.Logger      // logger receiving the shadow flow output, slog.Default() unless set; carries the instance name
-	encryptionService EncryptionService // encryptionService encrypting data diff, helps to prevent data leak
-	waitGroup         sync.WaitGroup    // waitGroup take a control over the goroutines
+	percentage          int               // percentage of the requests that will be shadowed
+	logger              *slog.Logger      // logger receiving the shadow flow output, slog.Default() unless set; carries the instance name
+	encryptionService   EncryptionService // encryptionService encrypting data diff, helps to prevent data leak
+	shadowTimeout       time.Duration     // shadowTimeout bounds each shadow flow call, no timeout unless set
+	plaintextProperties bool              // plaintextProperties keeps the differing field paths in plain text next to the encrypted values
+	semaphore           chan struct{}     // semaphore caps the number of concurrent shadow flows
+	waitGroup           sync.WaitGroup    // waitGroup take a control over the goroutines
 }
 
 // New creates a ShadowFlow for the given instance name, sampling percentage
@@ -43,10 +54,18 @@ func New[T any](instance string, percentage int, opts ...Option) (*ShadowFlow[T]
 	// Bind the instance once so every log line carries it as an attribute.
 	logger = logger.With(slog.String("component", "shadow-flow"), slog.String("instance", instance))
 
+	maxConcurrentShadows := cfg.maxConcurrentShadows
+	if maxConcurrentShadows == 0 {
+		maxConcurrentShadows = defaultMaxConcurrentShadows
+	}
+
 	shadowFlow := &ShadowFlow[T]{
-		percentage:        percentage,
-		logger:            logger,
-		encryptionService: cfg.encryptionService,
+		percentage:          percentage,
+		logger:              logger,
+		encryptionService:   cfg.encryptionService,
+		shadowTimeout:       cfg.shadowTimeout,
+		plaintextProperties: cfg.plaintextProperties,
+		semaphore:           make(chan struct{}, maxConcurrentShadows),
 	}
 
 	return shadowFlow, nil
@@ -75,51 +94,112 @@ func checkArgs(instance string, percentage int) error {
 // and optionally encrypts and logs the changed values if an encryption service is provided.
 // It always returns the result of the current flow.
 //
+// The context is passed to currentFlow as-is. The new flow runs in the
+// background on a context derived with context.WithoutCancel, so it keeps the
+// request's values (trace IDs) but is not cancelled together with the request;
+// use WithShadowTimeout to bound it.
+//
+// The comparison runs against a JSON round-trip copy of the current result, so
+// the caller may mutate the returned value right away. Fields not visible to
+// encoding/json (unexported fields) are therefore not compared.
+//
 // currentFlow: A function that when called, returns the result of the current flow.
 // newFlow: A function that when called, returns the result of the new flow.
 //
 // Returns: The result of the current flow.
-func (s *ShadowFlow[T]) Compare(currentFlow, newFlow func() (*T, error)) (*T, error) {
-	originalResponse, err := currentFlow()
-
-	if err == nil && s.shouldCallNewFlow() {
-		s.waitGroup.Add(1)
-		s.logger.Debug("calling new flow")
-		go func() {
-			defer s.waitGroup.Done()
-			defer s.recoverPanic()
-			shadowResponse, shdErr := newFlow()
-			if shadowResponse != nil && shdErr == nil {
-				s.diff(originalResponse, shadowResponse)
-			}
-		}()
-	}
-	return originalResponse, err
+func (s *ShadowFlow[T]) Compare(ctx context.Context, currentFlow, newFlow func(context.Context) (*T, error)) (*T, error) {
+	return compareFlows(ctx, s, currentFlow, newFlow)
 }
 
 // CompareSlices is the slice-returning counterpart to Compare: it runs
 // currentFlow, samples the traffic percentage to decide whether to also run
 // newFlow, and logs the differences between the two slice results.
-func (s *ShadowFlow[T]) CompareSlices(currentFlow, newFlow func() (*[]T, error)) (*[]T, error) {
-	originalResponse, err := currentFlow()
+func (s *ShadowFlow[T]) CompareSlices(ctx context.Context, currentFlow, newFlow func(context.Context) (*[]T, error)) (*[]T, error) {
+	return compareFlows(ctx, s, currentFlow, newFlow)
+}
 
-	if err == nil && s.shouldCallNewFlow() {
-		s.waitGroup.Add(1)
-		s.logger.Debug("calling new flow")
-		go func() {
-			defer s.waitGroup.Done()
-			defer s.recoverPanic()
-			shadowResponse, shdErr := newFlow()
-			if shadowResponse != nil && shdErr == nil {
-				s.diff(originalResponse, shadowResponse)
-			}
-		}()
+// compareFlows carries the shared Compare/CompareSlices implementation; it is
+// a package-level function because methods cannot introduce the extra type
+// parameter for the response.
+func compareFlows[T, R any](ctx context.Context, s *ShadowFlow[T], currentFlow, newFlow func(context.Context) (*R, error)) (*R, error) {
+	originalResponse, err := currentFlow(ctx)
+	if err != nil || !s.shouldCallNewFlow() {
+		return originalResponse, err
 	}
-	return originalResponse, err
+
+	select {
+	case s.semaphore <- struct{}{}:
+	default:
+		s.logger.Debug("shadow flow skipped: concurrency limit reached")
+		return originalResponse, nil
+	}
+
+	// Diff a copy so the caller may mutate the returned response while the
+	// shadow comparison is still running.
+	originalCopy, copyErr := deepCopy(originalResponse)
+	if copyErr != nil {
+		<-s.semaphore
+		s.logger.Error("failed to copy response for shadow comparison", slog.Any("error", copyErr))
+		return originalResponse, nil
+	}
+
+	// The shadow flow keeps the request's values (trace IDs) but must not be
+	// cancelled together with the request.
+	shadowCtx := context.WithoutCancel(ctx)
+
+	s.waitGroup.Add(1)
+	s.logger.Debug("calling new flow")
+	go func() {
+		defer s.waitGroup.Done()
+		defer func() { <-s.semaphore }()
+		defer s.recoverPanic()
+
+		ctx := shadowCtx
+		if s.shadowTimeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, s.shadowTimeout)
+			defer cancel()
+		}
+
+		shadowResponse, shdErr := newFlow(ctx)
+		if shdErr != nil {
+			s.logger.Warn("shadow flow returned an error", slog.Any("error", shdErr))
+			return
+		}
+		if shadowResponse == nil {
+			s.logger.Warn("shadow flow returned a nil result")
+			return
+		}
+		s.diff(originalCopy, shadowResponse)
+	}()
+	return originalResponse, nil
+}
+
+// deepCopy clones src through a JSON round-trip. Only fields visible to
+// encoding/json survive, which matches what ends up in the diff logs anyway.
+func deepCopy[R any](src *R) (*R, error) {
+	if src == nil {
+		return nil, nil
+	}
+
+	data, err := json.Marshal(src)
+	if err != nil {
+		return nil, err
+	}
+
+	dst := new(R)
+	if err := json.Unmarshal(data, dst); err != nil {
+		return nil, err
+	}
+	return dst, nil
 }
 
 // Wait blocks until every in-flight shadow comparison has finished.
 // Call it on graceful shutdown so pending diffs are not lost when the process exits.
+//
+// Stop issuing Compare calls before calling Wait: sync.WaitGroup requires that
+// an Add starting from a zero counter happens before Wait, so shut down the
+// traffic source (e.g. the HTTP server) first and drain the shadow flows last.
 func (s *ShadowFlow[T]) Wait() {
 	s.waitGroup.Wait()
 }
@@ -158,19 +238,25 @@ func (s *ShadowFlow[T]) diff(originalResponse, shadowResponse interface{}) {
 		return
 	}
 
+	// With encryption configured the field paths stay out of the plain-text
+	// attributes by default: diff paths include map keys, which may themselves
+	// be sensitive. The full paths travel inside the encrypted payload.
+	attrs := []any{slog.Int("count", len(changelog))}
+	if s.plaintextProperties {
+		attrs = append(attrs, slog.String("properties", properties))
+	}
+
 	encryptedValues, err := s.encryptionService.Encrypt(strings.Join(changedValues, "\n"))
 	if err != nil {
-		// Log only the property names on failure — the values stay confidential.
-		s.logger.Info("differences found",
-			slog.String("properties", properties),
-			slog.Any("encrypt_error", err),
-		)
+		// Fail closed: on encryption failure the values are dropped, never
+		// logged in plain text.
+		attrs = append(attrs, slog.Any("encrypt_error", err))
+		s.logger.Info("differences found", attrs...)
 		return
 	}
-	s.logger.Info("differences found",
-		slog.String("properties", properties),
-		slog.String("encrypted_values", encryptedValues),
-	)
+
+	attrs = append(attrs, slog.String("encrypted_values", encryptedValues))
+	s.logger.Info("differences found", attrs...)
 }
 
 // shouldCallNewFlow samples the traffic percentage. The top-level math/rand/v2
