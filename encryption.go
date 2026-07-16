@@ -1,3 +1,6 @@
+// Package shadowflow runs a new code path alongside an existing one on a
+// sample of traffic, diffs their results, and logs the differences —
+// optionally encrypting the logged values to avoid leaking sensitive data.
 package shadowflow
 
 import (
@@ -8,6 +11,8 @@ import (
 	"errors"
 )
 
+// EncryptionService encrypts the diff values logged by a ShadowFlow so they
+// don't leak sensitive data in plain text.
 type EncryptionService interface {
 	Encrypt(plainText string) (string, error)
 }
@@ -17,6 +22,7 @@ type EncryptionService interface {
 type NoopEncryptionService struct {
 }
 
+// Encrypt base64-encodes plainText without performing any real encryption.
 func (e *NoopEncryptionService) Encrypt(plainText string) (string, error) {
 	if plainText == "" {
 		return "", errors.New("plainText cannot be empty")
@@ -24,6 +30,7 @@ func (e *NoopEncryptionService) Encrypt(plainText string) (string, error) {
 	return base64.StdEncoding.EncodeToString([]byte(plainText)), nil
 }
 
+// NewNoopEncryptionService creates a NoopEncryptionService.
 func NewNoopEncryptionService() *NoopEncryptionService {
 	return &NoopEncryptionService{}
 }
@@ -34,10 +41,14 @@ type PublicKeyEncryptionService struct {
 	publicKey *rsa.PublicKey
 }
 
+// NewPublicKeyEncryptionService creates a PublicKeyEncryptionService that
+// encrypts with the given RSA public key.
 func NewPublicKeyEncryptionService(publicKey *rsa.PublicKey) *PublicKeyEncryptionService {
 	return &PublicKeyEncryptionService{publicKey: publicKey}
 }
 
+// Encrypt encrypts plainText with RSA-OAEP using the configured public key
+// and returns the result base64-encoded.
 func (encryptionService *PublicKeyEncryptionService) Encrypt(plainText string) (string, error) {
 	if plainText == "" {
 		return "", errors.New("plainText cannot be empty")

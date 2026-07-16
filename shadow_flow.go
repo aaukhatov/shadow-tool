@@ -12,6 +12,8 @@ import (
 	"github.com/r3labs/diff/v3"
 )
 
+// ShadowFlow runs a new code path alongside an existing one on a sample of
+// traffic, diffs their results, and logs what changed.
 type ShadowFlow[T any] struct {
 	percentage        int               // percentage of the requests that will be shadowed
 	logger            *slog.Logger      // logger receiving the shadow flow output, slog.Default() unless set; carries the instance name
@@ -19,6 +21,8 @@ type ShadowFlow[T any] struct {
 	waitGroup         sync.WaitGroup    // waitGroup take a control over the goroutines
 }
 
+// New creates a ShadowFlow for the given instance name, sampling percentage
+// (0-100), and options.
 func New[T any](instance string, percentage int, opts ...Option) (*ShadowFlow[T], error) {
 	err := checkArgs(instance, percentage)
 	if err != nil {
@@ -75,7 +79,7 @@ func checkArgs(instance string, percentage int) error {
 // newFlow: A function that when called, returns the result of the new flow.
 //
 // Returns: The result of the current flow.
-func (s *ShadowFlow[T]) Compare(currentFlow func() (*T, error), newFlow func() (*T, error)) (*T, error) {
+func (s *ShadowFlow[T]) Compare(currentFlow, newFlow func() (*T, error)) (*T, error) {
 	originalResponse, err := currentFlow()
 
 	if err == nil && s.shouldCallNewFlow() {
@@ -93,7 +97,10 @@ func (s *ShadowFlow[T]) Compare(currentFlow func() (*T, error), newFlow func() (
 	return originalResponse, err
 }
 
-func (s *ShadowFlow[T]) CompareSlices(currentFlow func() (*[]T, error), newFlow func() (*[]T, error)) (*[]T, error) {
+// CompareSlices is the slice-returning counterpart to Compare: it runs
+// currentFlow, samples the traffic percentage to decide whether to also run
+// newFlow, and logs the differences between the two slice results.
+func (s *ShadowFlow[T]) CompareSlices(currentFlow, newFlow func() (*[]T, error)) (*[]T, error) {
 	originalResponse, err := currentFlow()
 
 	if err == nil && s.shouldCallNewFlow() {
@@ -125,7 +132,7 @@ func (s *ShadowFlow[T]) recoverPanic() {
 	}
 }
 
-func (s *ShadowFlow[T]) diff(originalResponse interface{}, shadowResponse interface{}) {
+func (s *ShadowFlow[T]) diff(originalResponse, shadowResponse interface{}) {
 	changelog, err := diff.Diff(originalResponse, shadowResponse)
 	if err != nil {
 		s.logger.Error("failed to compare shadow flow responses", slog.Any("error", err))
@@ -169,7 +176,7 @@ func (s *ShadowFlow[T]) diff(originalResponse interface{}, shadowResponse interf
 // shouldCallNewFlow samples the traffic percentage. The top-level math/rand/v2
 // functions are safe for concurrent use, unlike a seeded *rand.Rand instance.
 func (s *ShadowFlow[T]) shouldCallNewFlow() bool {
-	return rand.IntN(100) < s.percentage
+	return rand.IntN(100) < s.percentage //nolint:gosec // sampling traffic percentage, not security-sensitive
 }
 
 func prettyPrintDiff(fieldPath string, change diff.Change) string {
