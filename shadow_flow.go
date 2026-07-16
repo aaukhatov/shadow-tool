@@ -123,6 +123,9 @@ func (s *ShadowFlow[T]) CompareSlices(ctx context.Context, currentFlow, newFlow 
 // a package-level function because methods cannot introduce the extra type
 // parameter for the response.
 func compareFlows[T, R any](ctx context.Context, s *ShadowFlow[T], currentFlow, newFlow func(context.Context) (*R, error)) (*R, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	originalResponse, err := currentFlow(ctx)
 	if err != nil || !s.shouldCallNewFlow() {
 		return originalResponse, err
