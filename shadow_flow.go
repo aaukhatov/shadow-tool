@@ -177,7 +177,7 @@ func prettyPrintDiff(fieldPath string, change diff.Change) string {
 }
 
 func toFullPath(change diff.Change) string {
-	return strings.Join(change.Path[:], ".")
+	return strings.Join(change.Path, ".")
 }
 
 func toString(value interface{}) string {

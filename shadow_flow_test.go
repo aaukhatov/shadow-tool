@@ -52,7 +52,7 @@ func TestShouldDetectDifferences(t *testing.T) {
 		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}, nil
 	}
 
-	shadowFlow.Compare(currentFlow, newFlow)
+	_, _ = shadowFlow.Compare(currentFlow, newFlow)
 	shadowFlow.Wait()
 
 	assertLogged(t, buf.String(),
@@ -73,7 +73,7 @@ func TestCurrentFlowCalledOnce(t *testing.T) {
 	}
 
 	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100, WithLogger(testLogger(new(bytes.Buffer))))
-	shadowFlow.Compare(currentFlow, newFlow)
+	_, _ = shadowFlow.Compare(currentFlow, newFlow)
 	shadowFlow.Wait()
 
 	if callCount != 1 {
@@ -93,7 +93,7 @@ func TestNewFlowNotCalled(t *testing.T) {
 
 	// Set percentage to 0 to ensure newFlow is not called
 	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 0, WithLogger(testLogger(new(bytes.Buffer))))
-	shadowFlow.Compare(currentFlow, newFlow)
+	_, _ = shadowFlow.Compare(currentFlow, newFlow)
 
 	if callCount != 0 {
 		t.Errorf("Expected newFlow not to be called, but it was called %d times", callCount)
@@ -117,7 +117,7 @@ func TestCompareWithNoopEncryptionService(t *testing.T) {
 		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}, nil
 	}
 
-	shadowFlow.Compare(currentFlow, newFlow)
+	_, _ = shadowFlow.Compare(currentFlow, newFlow)
 	shadowFlow.Wait()
 
 	expectedEncryptedValues, _ := encryptionService.Encrypt("'name' update: 'John' -> 'Doe'\n'birth-date' update: '2024-01-01' -> '2024-01-02'\n'Address.number' update: '18' -> '20'")
@@ -174,7 +174,7 @@ func TestMainFlowShouldNotWaitShadowFlow(t *testing.T) {
 	}
 
 	start := time.Now()
-	shadowFlow.Compare(currentFlow, newFlow)
+	_, _ = shadowFlow.Compare(currentFlow, newFlow)
 	elapsed := time.Since(start)
 
 	// The shadow flow sleeps for 1s; Compare must return well before that.
@@ -258,7 +258,7 @@ func TestWaitDrainsShadowFlows(t *testing.T) {
 		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
 	}
 
-	shadowFlow.Compare(currentFlow, newFlow)
+	_, _ = shadowFlow.Compare(currentFlow, newFlow)
 	shadowFlow.Wait()
 
 	if !shadowFinished.Load() {
@@ -285,7 +285,7 @@ func TestShouldDetectDifferencesForSlices(t *testing.T) {
 		}, nil
 	}
 
-	shadowFlow.CompareSlices(currentFlow, newFlow)
+	_, _ = shadowFlow.CompareSlices(currentFlow, newFlow)
 	shadowFlow.Wait()
 
 	assertLogged(t, buf.String(),
@@ -369,7 +369,7 @@ func TestWithLoggerReceivesShadowFlowOutput(t *testing.T) {
 		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
 	}
 
-	shadowFlow.Compare(currentFlow, newFlow)
+	_, _ = shadowFlow.Compare(currentFlow, newFlow)
 	shadowFlow.Wait()
 
 	properties, found := handler.attr("differences found", "properties")
