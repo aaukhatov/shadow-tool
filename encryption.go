@@ -20,14 +20,10 @@ type EncryptionService interface {
 
 // NoopEncryptionService is a version of the EncryptionService that doesn't perform any encryption,
 // it only encodes the differences as a base64 string as defined in RFC 4648.
-type NoopEncryptionService struct {
-}
+type NoopEncryptionService struct{}
 
 // Encrypt base64-encodes plainText without performing any real encryption.
 func (e *NoopEncryptionService) Encrypt(plainText string) (string, error) {
-	if plainText == "" {
-		return "", errors.New("plainText cannot be empty")
-	}
 	return base64.StdEncoding.EncodeToString([]byte(plainText)), nil
 }
 
@@ -57,15 +53,11 @@ func NewPublicKeyEncryptionService(publicKey *rsa.PublicKey) (*PublicKeyEncrypti
 
 // Encrypt encrypts plainText with RSA-OAEP using the configured public key
 // and returns the result base64-encoded.
-func (encryptionService *PublicKeyEncryptionService) Encrypt(plainText string) (string, error) {
-	if plainText == "" {
-		return "", errors.New("plainText cannot be empty")
-	}
-
+func (e *PublicKeyEncryptionService) Encrypt(plainText string) (string, error) {
 	encryptedData, err := rsa.EncryptOAEP(
 		sha256.New(),
 		rand.Reader,
-		encryptionService.publicKey,
+		e.publicKey,
 		[]byte(plainText),
 		nil,
 	)
