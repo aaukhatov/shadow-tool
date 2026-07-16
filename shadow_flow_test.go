@@ -172,6 +172,34 @@ func TestPlaintextPropertiesLoggedWhenOptedIn(t *testing.T) {
 	)
 }
 
+// lossyResponse round-trips through JSON lossily: Internal is dropped by
+// encoding/json and Payload decodes numbers as float64. Both sides of the
+// diff must be normalised identically or equal results report differences.
+type lossyResponse struct {
+	Name     string
+	Internal string `json:"-"`
+	Payload  any
+}
+
+func TestEqualResultsWithLossyJSONRoundTripReportNoDifferences(t *testing.T) {
+	buf := new(bytes.Buffer)
+	shadowFlow, _ := New[lossyResponse]("HUB_NAME", 100, WithLogger(testLogger(buf)))
+
+	makeResponse := func(context.Context) (*lossyResponse, error) {
+		return &lossyResponse{Name: "John", Internal: "not-serialised", Payload: map[string]any{"count": 42}}, nil
+	}
+
+	_, _ = shadowFlow.Compare(context.Background(), makeResponse, makeResponse)
+	shadowFlow.Wait()
+
+	// Diffing a normalised copy against a raw response used to report the
+	// json:"-" field as changed and to fail outright on int vs float64.
+	assertNotLogged(t, buf.String(),
+		`msg="differences found"`,
+		`msg="failed to compare shadow flow responses"`,
+	)
+}
+
 func TestNotAllowedToCreateShadowFlowWithInvalidPercentage(t *testing.T) {
 	_, err := New[dummyResponse]("HUB_NAME", 101)
 	if err == nil {

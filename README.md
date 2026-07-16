@@ -25,8 +25,9 @@ calls, it runs the new flow in a background goroutine, diffs the two results, an
 differ. A slow, failing, or even panicking shadow flow never affects the main flow: errors and panics are logged, never
 propagated.
 
-The diff runs against a copy of the current result (taken via a JSON round-trip), so you are free to mutate the returned
-value immediately - fields not visible to `encoding/json` are not compared. The shadow flow receives a context derived
+Both results are normalised through a JSON round-trip before the diff, so you are free to mutate the returned value
+immediately and only differences that survive `encoding/json` are reported - unexported fields and fields tagged
+`json:"-"` are never compared. The shadow flow receives a context derived
 with `context.WithoutCancel`, so it keeps the request's values (trace IDs) but is not cancelled together with the
 request; use `WithShadowTimeout` to bound it. At most 100 shadow flows run concurrently by default - sampled calls
 beyond the cap are skipped, never queued - and the cap is configurable with `WithMaxConcurrentShadows`.

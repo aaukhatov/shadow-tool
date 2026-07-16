@@ -99,9 +99,10 @@ func checkArgs(instance string, percentage int) error {
 // request's values (trace IDs) but is not cancelled together with the request;
 // use WithShadowTimeout to bound it.
 //
-// The comparison runs against a JSON round-trip copy of the current result, so
-// the caller may mutate the returned value right away. Fields not visible to
-// encoding/json (unexported fields) are therefore not compared.
+// Both results are normalised through a JSON round-trip before comparison, so
+// the caller may mutate the returned value right away and only differences
+// that survive encoding/json are reported: unexported fields and fields
+// tagged `json:"-"` are never compared.
 //
 // currentFlow: A function that when called, returns the result of the current flow.
 // newFlow: A function that when called, returns the result of the new flow.
@@ -170,7 +171,16 @@ func compareFlows[T, R any](ctx context.Context, s *ShadowFlow[T], currentFlow, 
 			s.logger.Warn("shadow flow returned a nil result")
 			return
 		}
-		s.diff(originalCopy, shadowResponse)
+		// Normalise the shadow response through the same JSON round-trip as the
+		// original copy; diffing one normalised and one raw value reports false
+		// positives whenever the round-trip is lossy (json:"-" fields, numbers
+		// in `any` decoding as float64, custom marshalers).
+		shadowCopy, copyErr := deepCopy(shadowResponse)
+		if copyErr != nil {
+			s.logger.Error("failed to copy shadow response for comparison", slog.Any("error", copyErr))
+			return
+		}
+		s.diff(originalCopy, shadowCopy)
 	}()
 	return originalResponse, nil
 }
