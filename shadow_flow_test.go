@@ -3,6 +3,7 @@ package shadowflow
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -30,6 +31,16 @@ func assertLogged(t *testing.T, output string, substrs ...string) {
 	}
 }
 
+// assertNotLogged fails the test if any of the substrings appears in the log output.
+func assertNotLogged(t *testing.T, output string, substrs ...string) {
+	t.Helper()
+	for _, substr := range substrs {
+		if strings.Contains(output, substr) {
+			t.Errorf("Expected %q to be absent from the log output, got:\n%s", substr, output)
+		}
+	}
+}
+
 type dummyResponse struct {
 	Name      string `diff:"name"`
 	BirthDate string `diff:"birth-date"`
@@ -45,14 +56,14 @@ func TestShouldDetectDifferences(t *testing.T) {
 	buf := new(bytes.Buffer)
 	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100, WithLogger(testLogger(buf)))
 
-	currentFlow := func() (*dummyResponse, error) {
+	currentFlow := func(context.Context) (*dummyResponse, error) {
 		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
 	}
-	newFlow := func() (*dummyResponse, error) {
+	newFlow := func(context.Context) (*dummyResponse, error) {
 		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}, nil
 	}
 
-	_, _ = shadowFlow.Compare(currentFlow, newFlow)
+	_, _ = shadowFlow.Compare(context.Background(), currentFlow, newFlow)
 	shadowFlow.Wait()
 
 	assertLogged(t, buf.String(),
@@ -64,16 +75,16 @@ func TestShouldDetectDifferences(t *testing.T) {
 
 func TestCurrentFlowCalledOnce(t *testing.T) {
 	callCount := 0
-	currentFlow := func() (*dummyResponse, error) {
+	currentFlow := func(context.Context) (*dummyResponse, error) {
 		callCount++
 		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
 	}
-	newFlow := func() (*dummyResponse, error) {
+	newFlow := func(context.Context) (*dummyResponse, error) {
 		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}, nil
 	}
 
 	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100, WithLogger(testLogger(new(bytes.Buffer))))
-	_, _ = shadowFlow.Compare(currentFlow, newFlow)
+	_, _ = shadowFlow.Compare(context.Background(), currentFlow, newFlow)
 	shadowFlow.Wait()
 
 	if callCount != 1 {
@@ -83,17 +94,17 @@ func TestCurrentFlowCalledOnce(t *testing.T) {
 
 func TestNewFlowNotCalled(t *testing.T) {
 	callCount := 0
-	currentFlow := func() (*dummyResponse, error) {
+	currentFlow := func(context.Context) (*dummyResponse, error) {
 		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
 	}
-	newFlow := func() (*dummyResponse, error) {
+	newFlow := func(context.Context) (*dummyResponse, error) {
 		callCount++
 		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}, nil
 	}
 
 	// Set percentage to 0 to ensure newFlow is not called
 	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 0, WithLogger(testLogger(new(bytes.Buffer))))
-	_, _ = shadowFlow.Compare(currentFlow, newFlow)
+	_, _ = shadowFlow.Compare(context.Background(), currentFlow, newFlow)
 
 	if callCount != 0 {
 		t.Errorf("Expected newFlow not to be called, but it was called %d times", callCount)
@@ -110,23 +121,82 @@ func TestCompareWithNoopEncryptionService(t *testing.T) {
 		WithEncryptionService(encryptionService),
 	)
 
-	currentFlow := func() (*dummyResponse, error) {
+	currentFlow := func(context.Context) (*dummyResponse, error) {
 		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
 	}
-	newFlow := func() (*dummyResponse, error) {
+	newFlow := func(context.Context) (*dummyResponse, error) {
 		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}, nil
 	}
 
-	_, _ = shadowFlow.Compare(currentFlow, newFlow)
+	_, _ = shadowFlow.Compare(context.Background(), currentFlow, newFlow)
 	shadowFlow.Wait()
 
 	expectedEncryptedValues, _ := encryptionService.Encrypt("'name' update: 'John' -> 'Doe'\n'birth-date' update: '2024-01-01' -> '2024-01-02'\n'Address.number' update: '18' -> '20'")
 
 	assertLogged(t, buf.String(),
 		`msg="differences found"`,
-		`properties="name, birth-date, Address.number"`,
+		"count=3",
 		// TextHandler quotes the value: base64 contains '=' and '+'.
 		fmt.Sprintf("encrypted_values=%q", expectedEncryptedValues),
+	)
+	// With encryption configured, the field paths stay out of the plain-text
+	// attributes by default — they may contain sensitive map keys.
+	assertNotLogged(t, buf.String(), "properties=")
+}
+
+func TestPlaintextPropertiesLoggedWhenOptedIn(t *testing.T) {
+	buf := new(bytes.Buffer)
+	shadowFlow, _ := New[dummyResponse](
+		"HUB_NAME",
+		100,
+		WithLogger(testLogger(buf)),
+		WithEncryptionService(NewNoopEncryptionService()),
+		WithPlaintextProperties(),
+	)
+
+	currentFlow := func(context.Context) (*dummyResponse, error) {
+		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
+	}
+	newFlow := func(context.Context) (*dummyResponse, error) {
+		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
+	}
+
+	_, _ = shadowFlow.Compare(context.Background(), currentFlow, newFlow)
+	shadowFlow.Wait()
+
+	assertLogged(t, buf.String(),
+		`msg="differences found"`,
+		"count=1",
+		"properties=name",
+		"encrypted_values=",
+	)
+}
+
+// lossyResponse round-trips through JSON lossily: Internal is dropped by
+// encoding/json and Payload decodes numbers as float64. Both sides of the
+// diff must be normalised identically or equal results report differences.
+type lossyResponse struct {
+	Name     string
+	Internal string `json:"-"`
+	Payload  any
+}
+
+func TestEqualResultsWithLossyJSONRoundTripReportNoDifferences(t *testing.T) {
+	buf := new(bytes.Buffer)
+	shadowFlow, _ := New[lossyResponse]("HUB_NAME", 100, WithLogger(testLogger(buf)))
+
+	makeResponse := func(context.Context) (*lossyResponse, error) {
+		return &lossyResponse{Name: "John", Internal: "not-serialised", Payload: map[string]any{"count": 42}}, nil
+	}
+
+	_, _ = shadowFlow.Compare(context.Background(), makeResponse, makeResponse)
+	shadowFlow.Wait()
+
+	// Diffing a normalised copy against a raw response used to report the
+	// json:"-" field as changed and to fail outright on int vs float64.
+	assertNotLogged(t, buf.String(),
+		`msg="differences found"`,
+		`msg="failed to compare shadow flow responses"`,
 	)
 }
 
@@ -165,16 +235,16 @@ func TestMainFlowShouldNotWaitShadowFlow(t *testing.T) {
 	buf := new(bytes.Buffer)
 	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100, WithLogger(testLogger(buf)))
 
-	currentFlow := func() (*dummyResponse, error) {
+	currentFlow := func(context.Context) (*dummyResponse, error) {
 		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
 	}
-	newFlow := func() (*dummyResponse, error) {
+	newFlow := func(context.Context) (*dummyResponse, error) {
 		time.Sleep(1000 * time.Millisecond) // simulate a long running shadow flow
 		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}, nil
 	}
 
 	start := time.Now()
-	_, _ = shadowFlow.Compare(currentFlow, newFlow)
+	_, _ = shadowFlow.Compare(context.Background(), currentFlow, newFlow)
 	elapsed := time.Since(start)
 
 	// The shadow flow sleeps for 1s; Compare must return well before that.
@@ -194,10 +264,10 @@ func TestConcurrentCompare(t *testing.T) {
 	buf := new(bytes.Buffer)
 	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 50, WithLogger(testLogger(buf)))
 
-	currentFlow := func() (*dummyResponse, error) {
+	currentFlow := func(context.Context) (*dummyResponse, error) {
 		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
 	}
-	newFlow := func() (*dummyResponse, error) {
+	newFlow := func(context.Context) (*dummyResponse, error) {
 		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}, nil
 	}
 
@@ -206,7 +276,7 @@ func TestConcurrentCompare(t *testing.T) {
 		callers.Add(1)
 		go func() {
 			defer callers.Done()
-			response, err := shadowFlow.Compare(currentFlow, newFlow)
+			response, err := shadowFlow.Compare(context.Background(), currentFlow, newFlow)
 			if err != nil {
 				t.Errorf("Expected no error from Compare, got %v", err)
 			}
@@ -223,14 +293,14 @@ func TestShadowFlowPanicDoesNotCrashMainFlow(t *testing.T) {
 	buf := new(bytes.Buffer)
 	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100, WithLogger(testLogger(buf)))
 
-	currentFlow := func() (*dummyResponse, error) {
+	currentFlow := func(context.Context) (*dummyResponse, error) {
 		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
 	}
-	newFlow := func() (*dummyResponse, error) {
+	newFlow := func(context.Context) (*dummyResponse, error) {
 		panic("shadow flow blew up")
 	}
 
-	response, err := shadowFlow.Compare(currentFlow, newFlow)
+	response, err := shadowFlow.Compare(context.Background(), currentFlow, newFlow)
 	shadowFlow.Wait()
 
 	if err != nil || response == nil || response.Name != "John" {
@@ -249,16 +319,16 @@ func TestWaitDrainsShadowFlows(t *testing.T) {
 	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100, WithLogger(testLogger(buf)))
 
 	var shadowFinished atomic.Bool
-	currentFlow := func() (*dummyResponse, error) {
+	currentFlow := func(context.Context) (*dummyResponse, error) {
 		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
 	}
-	newFlow := func() (*dummyResponse, error) {
+	newFlow := func(context.Context) (*dummyResponse, error) {
 		time.Sleep(100 * time.Millisecond)
 		shadowFinished.Store(true)
 		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
 	}
 
-	_, _ = shadowFlow.Compare(currentFlow, newFlow)
+	_, _ = shadowFlow.Compare(context.Background(), currentFlow, newFlow)
 	shadowFlow.Wait()
 
 	if !shadowFinished.Load() {
@@ -272,20 +342,20 @@ func TestShouldDetectDifferencesForSlices(t *testing.T) {
 	buf := new(bytes.Buffer)
 	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100, WithLogger(testLogger(buf)))
 
-	currentFlow := func() (*[]dummyResponse, error) {
+	currentFlow := func(context.Context) (*[]dummyResponse, error) {
 		return &[]dummyResponse{
 			{Name: "Cristiano Ronaldo", BirthDate: "1985-02-05", Address: address{Number: 7, Street: "Funchal"}},
 			{Name: "Lionel Messi", BirthDate: "1987-06-24", Address: address{Number: 10, Street: "La Bajada"}},
 		}, nil
 	}
-	newFlow := func() (*[]dummyResponse, error) {
+	newFlow := func(context.Context) (*[]dummyResponse, error) {
 		return &[]dummyResponse{
 			{Name: "Cristiano Ronaldo", BirthDate: "1985-02-05", Address: address{Number: 19, Street: "Funchal"}},
 			{Name: "Lionel Mesi", BirthDate: "1997-06-24", Address: address{Number: 10, Street: "La Bajada"}},
 		}, nil
 	}
 
-	_, _ = shadowFlow.CompareSlices(currentFlow, newFlow)
+	_, _ = shadowFlow.CompareSlices(context.Background(), currentFlow, newFlow)
 	shadowFlow.Wait()
 
 	assertLogged(t, buf.String(),
@@ -362,14 +432,14 @@ func TestWithLoggerReceivesShadowFlowOutput(t *testing.T) {
 		t.Fatalf("Expected no error from New with WithLogger, got %v", err)
 	}
 
-	currentFlow := func() (*dummyResponse, error) {
+	currentFlow := func(context.Context) (*dummyResponse, error) {
 		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
 	}
-	newFlow := func() (*dummyResponse, error) {
+	newFlow := func(context.Context) (*dummyResponse, error) {
 		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
 	}
 
-	_, _ = shadowFlow.Compare(currentFlow, newFlow)
+	_, _ = shadowFlow.Compare(context.Background(), currentFlow, newFlow)
 	shadowFlow.Wait()
 
 	properties, found := handler.attr("differences found", "properties")
@@ -419,6 +489,186 @@ func TestFirstFailingOptionIsReported(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "logger cannot be nil") {
 		t.Errorf("Expected the first failing option to be reported, got %v", err)
+	}
+}
+
+func TestCallerMayMutateReturnedResponse(t *testing.T) {
+	buf := new(bytes.Buffer)
+	encryptionService := NewNoopEncryptionService()
+	shadowFlow, _ := New[dummyResponse](
+		"HUB_NAME",
+		100,
+		WithLogger(testLogger(buf)),
+		WithEncryptionService(encryptionService),
+	)
+
+	// The shadow flow finishes only after the caller has mutated the returned
+	// response, so the diff must run on a copy taken before the mutation.
+	mutated := make(chan struct{})
+	currentFlow := func(context.Context) (*dummyResponse, error) {
+		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
+	}
+	newFlow := func(context.Context) (*dummyResponse, error) {
+		<-mutated
+		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}, nil
+	}
+
+	response, _ := shadowFlow.Compare(context.Background(), currentFlow, newFlow)
+	response.Name = "MUTATED"
+	response.Address.Number = 99
+	close(mutated)
+	shadowFlow.Wait()
+
+	expectedEncryptedValues, _ := encryptionService.Encrypt("'name' update: 'John' -> 'Doe'\n'birth-date' update: '2024-01-01' -> '2024-01-02'\n'Address.number' update: '18' -> '20'")
+
+	assertLogged(t, buf.String(),
+		`msg="differences found"`,
+		fmt.Sprintf("encrypted_values=%q", expectedEncryptedValues),
+	)
+}
+
+func TestShadowFlowErrorIsLogged(t *testing.T) {
+	buf := new(bytes.Buffer)
+	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100, WithLogger(testLogger(buf)))
+
+	currentFlow := func(context.Context) (*dummyResponse, error) {
+		return &dummyResponse{Name: "John"}, nil
+	}
+	newFlow := func(context.Context) (*dummyResponse, error) {
+		return nil, errors.New("new backend unavailable")
+	}
+
+	response, err := shadowFlow.Compare(context.Background(), currentFlow, newFlow)
+	shadowFlow.Wait()
+
+	if err != nil || response == nil || response.Name != "John" {
+		t.Errorf("Expected the current flow response despite the shadow flow error, got %v, %v", response, err)
+	}
+
+	assertLogged(t, buf.String(),
+		"level=WARN",
+		`msg="shadow flow returned an error"`,
+		`error="new backend unavailable"`,
+	)
+}
+
+func TestShadowFlowNilResultIsLogged(t *testing.T) {
+	buf := new(bytes.Buffer)
+	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100, WithLogger(testLogger(buf)))
+
+	currentFlow := func(context.Context) (*dummyResponse, error) {
+		return &dummyResponse{Name: "John"}, nil
+	}
+	newFlow := func(context.Context) (*dummyResponse, error) {
+		return nil, nil //nolint:nilnil // a nil result without an error is exactly the case under test
+	}
+
+	_, _ = shadowFlow.Compare(context.Background(), currentFlow, newFlow)
+	shadowFlow.Wait()
+
+	assertLogged(t, buf.String(),
+		"level=WARN",
+		`msg="shadow flow returned a nil result"`,
+	)
+}
+
+func TestConcurrencyLimitSkipsShadow(t *testing.T) {
+	buf := new(bytes.Buffer)
+	shadowFlow, _ := New[dummyResponse](
+		"HUB_NAME",
+		100,
+		WithLogger(testLogger(buf)),
+		WithMaxConcurrentShadows(1),
+	)
+
+	release := make(chan struct{})
+	var newFlowCalls atomic.Int32
+	currentFlow := func(context.Context) (*dummyResponse, error) {
+		return &dummyResponse{Name: "John"}, nil
+	}
+	newFlow := func(context.Context) (*dummyResponse, error) {
+		newFlowCalls.Add(1)
+		<-release
+		return &dummyResponse{Name: "Doe"}, nil
+	}
+
+	// The first call occupies the only slot; the second must be skipped.
+	_, _ = shadowFlow.Compare(context.Background(), currentFlow, newFlow)
+	_, err := shadowFlow.Compare(context.Background(), currentFlow, newFlow)
+	if err != nil {
+		t.Errorf("Expected no error from the skipped Compare, got %v", err)
+	}
+	close(release)
+	shadowFlow.Wait()
+
+	if calls := newFlowCalls.Load(); calls != 1 {
+		t.Errorf("Expected the second shadow flow to be skipped, but newFlow was called %d times", calls)
+	}
+	assertLogged(t, buf.String(), `msg="shadow flow skipped: concurrency limit reached"`)
+}
+
+func TestShadowFlowSurvivesRequestCancellation(t *testing.T) {
+	buf := new(bytes.Buffer)
+	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100, WithLogger(testLogger(buf)))
+
+	// The request context is already cancelled; the shadow flow must still run
+	// on an uncancelled context derived from it.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	currentFlow := func(context.Context) (*dummyResponse, error) {
+		return &dummyResponse{Name: "John"}, nil
+	}
+	newFlow := func(ctx context.Context) (*dummyResponse, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return &dummyResponse{Name: "Doe"}, nil
+	}
+
+	_, _ = shadowFlow.Compare(ctx, currentFlow, newFlow)
+	shadowFlow.Wait()
+
+	assertLogged(t, buf.String(), `msg="differences found"`, "properties=name")
+}
+
+func TestShadowTimeoutBoundsShadowFlow(t *testing.T) {
+	buf := new(bytes.Buffer)
+	shadowFlow, _ := New[dummyResponse](
+		"HUB_NAME",
+		100,
+		WithLogger(testLogger(buf)),
+		WithShadowTimeout(10*time.Millisecond),
+	)
+
+	currentFlow := func(context.Context) (*dummyResponse, error) {
+		return &dummyResponse{Name: "John"}, nil
+	}
+	newFlow := func(ctx context.Context) (*dummyResponse, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	_, _ = shadowFlow.Compare(context.Background(), currentFlow, newFlow)
+	shadowFlow.Wait()
+
+	assertLogged(t, buf.String(),
+		`msg="shadow flow returned an error"`,
+		"context deadline exceeded",
+	)
+}
+
+func TestWithShadowTimeoutMustBePositive(t *testing.T) {
+	_, err := New[dummyResponse]("HUB_NAME", 100, WithShadowTimeout(0))
+	if err == nil {
+		t.Errorf("Expected error when creating ShadowFlow with a non-positive shadow timeout")
+	}
+}
+
+func TestWithMaxConcurrentShadowsMustBePositive(t *testing.T) {
+	_, err := New[dummyResponse]("HUB_NAME", 100, WithMaxConcurrentShadows(0))
+	if err == nil {
+		t.Errorf("Expected error when creating ShadowFlow with a non-positive concurrency limit")
 	}
 }
 

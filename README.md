@@ -22,8 +22,15 @@ go get github.com/aaukhatov/shadow-tool
 
 `Compare` calls the current flow synchronously and returns its result - always. Then, for the configured percentage of
 calls, it runs the new flow in a background goroutine, diffs the two results, and logs the paths of the fields that
-differ. A slow, failing, or even panicking shadow flow never affects the main flow: errors are skipped, panics are
-recovered and logged.
+differ. A slow, failing, or even panicking shadow flow never affects the main flow: errors and panics are logged, never
+propagated.
+
+Both results are normalised through a JSON round-trip before the diff, so you are free to mutate the returned value
+immediately and only differences that survive `encoding/json` are reported - unexported fields and fields tagged
+`json:"-"` are never compared. The shadow flow receives a context derived
+with `context.WithoutCancel`, so it keeps the request's values (trace IDs) but is not cancelled together with the
+request; use `WithShadowTimeout` to bound it. At most 100 shadow flows run concurrently by default - sampled calls
+beyond the cap are skipped, never queued - and the cap is configurable with `WithMaxConcurrentShadows`.
 
 Without an encryption service, only the *names* of the differing fields are logged. If you construct the flow with an
 encryption service, the old and new *values* are logged too, encrypted.
@@ -34,6 +41,7 @@ encryption service, the old and new *values* are logged too, encrypted.
 package main
 
 import (
+	"context"
 	"log"
 
 	shadowflow "github.com/aaukhatov/shadow-tool"
@@ -49,14 +57,14 @@ type Payload struct {
 // LegacyBackend is the implementation currently serving traffic.
 type LegacyBackend struct{}
 
-func (s *LegacyBackend) GetPayload() (*Payload, error) {
+func (s *LegacyBackend) GetPayload(ctx context.Context) (*Payload, error) {
 	return &Payload{Id: 1, Name: "John", Date: "2024-01-01"}, nil
 }
 
 // NewBackend is the implementation that should eventually replace it.
 type NewBackend struct{}
 
-func (s *NewBackend) GetPayload() (*Payload, error) {
+func (s *NewBackend) GetPayload(ctx context.Context) (*Payload, error) {
 	return &Payload{Id: 1, Name: "John", Date: "2024-03-01"}, nil
 }
 
@@ -73,14 +81,15 @@ func main() {
 
 	// The caller always gets the legacy result. On sampled calls the new
 	// backend also runs in the background and differences are logged.
-	payload, err := flow.Compare(legacy.GetPayload, candidate.GetPayload)
+	payload, err := flow.Compare(context.Background(), legacy.GetPayload, candidate.GetPayload)
 	if err != nil {
 		log.Fatalf("backend call failed: %v", err)
 	}
 	log.Printf("got payload: %+v", payload)
 
-	// On shutdown, wait for in-flight shadow comparisons to finish
-	// so no diffs are lost.
+	// On shutdown, wait for in-flight shadow comparisons to finish so no
+	// diffs are lost. Stop issuing Compare calls first (e.g. shut down the
+	// HTTP server), then drain the shadow flows.
 	flow.Wait()
 }
 ```
@@ -99,13 +108,14 @@ The shadow flow logs through `log/slog`. By default it uses `slog.Default()`, so
 application already sends its logs - the library does not impose a destination or a format of its own. The instance name
 is attached as an `instance` attribute rather than interpolated into the message, so you can filter on it.
 
-Three levels are used:
+Four levels are used:
 
-| Level   | Logged                                                                                                  |
-|---------|---------------------------------------------------------------------------------------------------------|
-| `Debug` | Each sampled call, as the shadow flow starts. Off by default; enable it to confirm sampling is working. |
-| `Info`  | The fields that differ, and the encrypted values when an encryption service is configured.              |
-| `Error` | A shadow flow that panicked, and failures to diff the two responses.                                    |
+| Level   | Logged                                                                                                                                                                     |
+|---------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `Debug` | Each sampled call, as the shadow flow starts, and sampled calls skipped because the concurrency cap was reached. Off by default; enable it to confirm sampling is working. |
+| `Info`  | The fields that differ, and the encrypted values when an encryption service is configured.                                                                                 |
+| `Warn`  | A shadow flow that returned an error or a nil result.                                                                                                                      |
+| `Error` | A shadow flow that panicked, failures to diff the two responses, and failures to copy the response for comparison.                                                         |
 
 To send the output somewhere other than `slog.Default()`, pass the `WithLogger` option:
 
@@ -139,8 +149,27 @@ Two implementations ship with the package:
   2048-bit key); if a diff is too large to encrypt, the field names are still logged but the values are dropped rather
   than logged in plain text.
 
+With an encryption service configured, a divergence produces a log line like:
+
+```
+time=2024-03-01T12:00:00.000Z level=INFO msg="differences found" component=shadow-flow instance=payload-service count=1 encrypted_values="mzHJ..."
+```
+
+The differing field paths are *not* logged in plain text by default: diff paths include map keys, which may themselves
+be sensitive (say, a map keyed by e-mail address). The full paths travel inside the encrypted payload. If your responses
+carry no sensitive map keys and you want the paths visible for quick triage, opt back in with
+`shadowflow.WithPlaintextProperties()`.
+
 You can also implement the one-method `EncryptionService` interface yourself, for example to use AES-GCM with a key from
 your secret manager.
+
+### Other options
+
+* `WithShadowTimeout(d)` - cancels the context passed to the shadow flow after `d`. Without it the shadow flow runs
+  until it returns on its own.
+* `WithMaxConcurrentShadows(n)` - caps the number of shadow flows running at the same time (default 100). Sampled calls
+  beyond the cap are skipped, never queued, so a slow new flow cannot pile up goroutines.
+* `WithPlaintextProperties()` - logs the differing field paths in plain text next to the encrypted values (see above).
 
 ## Contributing
 
