@@ -16,6 +16,7 @@ type config struct {
 	logger               *slog.Logger
 	encryptionService    EncryptionService
 	shadowTimeout        time.Duration
+	noShadowTimeout      bool
 	maxConcurrentShadows int
 	plaintextProperties  bool
 }
@@ -46,14 +47,26 @@ func WithEncryptionService(encryptionService EncryptionService) Option {
 }
 
 // WithShadowTimeout bounds each shadow flow call: the context passed to the
-// new flow is cancelled after the given duration. Without it the shadow flow
-// runs until it returns on its own.
+// new flow is cancelled after the given duration. Without it, shadow flows
+// get a default timeout of 10 seconds; use WithoutShadowTimeout to run them
+// unbounded instead.
 func WithShadowTimeout(timeout time.Duration) Option {
 	return func(c *config) error {
 		if timeout <= 0 {
 			return errors.New("shadow timeout must be positive")
 		}
 		c.shadowTimeout = timeout
+		return nil
+	}
+}
+
+// WithoutShadowTimeout disables the default shadow timeout, so the shadow
+// flow runs until it returns on its own. A hung new flow then holds its
+// concurrency slot indefinitely; prefer WithShadowTimeout unless the new flow
+// is already known to be bounded.
+func WithoutShadowTimeout() Option {
+	return func(c *config) error {
+		c.noShadowTimeout = true
 		return nil
 	}
 }

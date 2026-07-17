@@ -1,7 +1,7 @@
 # shadow-tool
 
 Shadow testing for Go. Run a new implementation next to the current one on a slice of real traffic, compare the results
-in the background, and log what differs - without ever changing what the caller gets back.
+in the background, and log what differs – without ever changing what the caller gets back.
 
 The typical use case is replacing something risky: a backend service, a query, a whole code path. You keep serving
 responses from the current implementation while the new one runs "in the shadow" for a configurable percentage of calls.
@@ -20,7 +20,7 @@ go get github.com/aaukhatov/shadow-tool
 
 ## How it works
 
-`Compare` calls the current flow synchronously and returns its result - always. Then, for the configured percentage of
+`Compare` calls the current flow synchronously and returns its result – always. Then, for the configured percentage of
 calls, it runs the new flow in a background goroutine, diffs the two results, and logs the paths of the fields that
 differ. A slow, failing, or even panicking shadow flow never affects the main flow: errors and panics are logged, never
 propagated.
@@ -28,12 +28,20 @@ propagated.
 Both results are normalised through a JSON round-trip before the diff, so you are free to mutate the returned value
 immediately and only differences that survive `encoding/json` are reported - unexported fields and fields tagged
 `json:"-"` are never compared. The shadow flow receives a context derived
-with `context.WithoutCancel`, so it keeps the request's values (trace IDs) but is not cancelled together with the
-request; use `WithShadowTimeout` to bound it. At most 100 shadow flows run concurrently by default - sampled calls
-beyond the cap are skipped, never queued - and the cap is configurable with `WithMaxConcurrentShadows`.
+with `context.WithoutCancel`, so it keeps the request's values (trace IDs) but is not canceled together with the
+request; it is bounded by a 10-second default timeout so a hung new flow can't hold its concurrency slot forever, and
+that timeout can be changed with `WithShadowTimeout` or removed entirely with `WithoutShadowTimeout`. At most 100
+shadow flows run concurrently by default – sampled calls beyond the cap are skipped, never queued – and the cap is
+configurable with `WithMaxConcurrentShadows`.
 
 Without an encryption service, only the *names* of the differing fields are logged. If you construct the flow with an
 encryption service, the old and new *values* are logged too, encrypted.
+
+**Error-path parity is out of scope.** If the current flow returns an error, the shadow comparison is skipped
+entirely – the new flow is never called, so you can't learn whether it would have failed the same way, failed
+differently, or succeeded. If the new flow itself returns an error, that's only logged at `Warn` level; it is never
+compared against the current flow's (successful) result. This library diffs successful outputs on the happy path –
+it is not a substitute for monitoring the new flow's own error rate once it's live.
 
 ## Usage
 
@@ -127,7 +135,7 @@ shadowflow.WithLogger(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptio
 ```
 
 Backends other than slog work through their slog bridge - [`zapslog`](https://pkg.go.dev/go.uber.org/zap/exp/zapslog)
-for zap, or the [`samber/slog-*`](https://github.com/samber/slog-zerolog) family for zerolog, logrus and others. No
+for zap, or the [`samber/slog-*`](https://github.com/samber/slog-zerolog) family for zerolog, logrus, and others. No
 adapter code of your own is needed.
 
 ### Logging the differing values, encrypted
@@ -145,7 +153,7 @@ Two implementations ship with the package:
   don't use it where the logs matter, since base64 is trivially reversible.
 * `NewPublicKeyEncryptionService(publicKey)` - encrypts with RSA-OAEP (SHA-256) using your `*rsa.PublicKey`, so only the
   holder of the private key can read the values. Note that RSA-OAEP caps the message size (about 190 bytes with a
-  2048-bit key); if a diff is too large to encrypt, the field names are still logged but the values are dropped rather
+  2048-bit key); if a diff is too large to encrypt, the field names are still logged, but the values are dropped rather
   than logged in plain text.
 
 With an encryption service configured, a divergence produces a log line like:
@@ -164,8 +172,10 @@ your secret manager.
 
 ### Other options
 
-* `WithShadowTimeout(d)` - cancels the context passed to the shadow flow after `d`. Without it the shadow flow runs
-  until it returns on its own.
+* `WithShadowTimeout(d)` - cancels the context passed to the shadow flow after `d`, instead of the 10-second default.
+* `WithoutShadowTimeout()` - removes the default timeout, so the shadow flow runs until it returns on its own. A hung
+  new flow then holds its concurrency slot indefinitely, so prefer `WithShadowTimeout` unless the new flow is already
+  known to be bounded.
 * `WithMaxConcurrentShadows(n)` - caps the number of shadow flows running at the same time (default 100). Sampled calls
   beyond the cap are skipped, never queued, so a slow new flow cannot pile up goroutines.
 * `WithPlaintextProperties()` - logs the differing field paths in plain text next to the encrypted values (see above).

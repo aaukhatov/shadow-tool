@@ -20,13 +20,18 @@ import (
 // cannot accumulate goroutines without bound.
 const defaultMaxConcurrentShadows = 100
 
+// defaultShadowTimeout bounds each shadow flow call when neither
+// WithShadowTimeout nor WithoutShadowTimeout is set, so a hung new flow
+// cannot hold its concurrency slot (and, transitively, all of them) forever.
+const defaultShadowTimeout = 10 * time.Second
+
 // ShadowFlow runs a new code path alongside an existing one on a sample of
 // traffic, diffs their results, and logs what changed.
 type ShadowFlow[T any] struct {
 	percentage          int               // percentage of the requests that will be shadowed
 	logger              *slog.Logger      // logger receiving the shadow flow output, slog.Default() unless set; carries the instance name
 	encryptionService   EncryptionService // encryptionService encrypting data diff, helps to prevent data leak
-	shadowTimeout       time.Duration     // shadowTimeout bounds each shadow flow call, no timeout unless set
+	shadowTimeout       time.Duration     // shadowTimeout bounds each shadow flow call; defaultShadowTimeout unless overridden, 0 if WithoutShadowTimeout was set
 	plaintextProperties bool              // plaintextProperties keeps the differing field paths in plain text next to the encrypted values
 	semaphore           chan struct{}     // semaphore caps the number of concurrent shadow flows
 	waitGroup           sync.WaitGroup    // waitGroup tracks in-flight shadow goroutines for Wait
@@ -47,6 +52,10 @@ func New[T any](instance string, percentage int, opts ...Option) (*ShadowFlow[T]
 		}
 	}
 
+	if cfg.shadowTimeout > 0 && cfg.noShadowTimeout {
+		return nil, errors.New("cannot combine WithShadowTimeout and WithoutShadowTimeout")
+	}
+
 	logger := cfg.logger
 	if logger == nil {
 		logger = slog.Default()
@@ -59,11 +68,16 @@ func New[T any](instance string, percentage int, opts ...Option) (*ShadowFlow[T]
 		maxConcurrentShadows = defaultMaxConcurrentShadows
 	}
 
+	shadowTimeout := cfg.shadowTimeout
+	if shadowTimeout == 0 && !cfg.noShadowTimeout {
+		shadowTimeout = defaultShadowTimeout
+	}
+
 	shadowFlow := &ShadowFlow[T]{
 		percentage:          percentage,
 		logger:              logger,
 		encryptionService:   cfg.encryptionService,
-		shadowTimeout:       cfg.shadowTimeout,
+		shadowTimeout:       shadowTimeout,
 		plaintextProperties: cfg.plaintextProperties,
 		semaphore:           make(chan struct{}, maxConcurrentShadows),
 	}
@@ -89,8 +103,10 @@ func checkArgs(instance string, percentage int) error {
 //
 // The context is passed to currentFlow as-is. The new flow runs in the
 // background on a context derived with context.WithoutCancel, so it keeps the
-// request's values (trace IDs) but is not cancelled together with the request;
-// use WithShadowTimeout to bound it.
+// request's values (trace IDs) but is not cancelled together with the
+// request; it is instead bounded by a default timeout of 10 seconds unless
+// overridden with WithShadowTimeout, or left unbounded with
+// WithoutShadowTimeout.
 //
 // Both results are normalised through a JSON round-trip before comparison, so
 // the caller may mutate the returned value right away and only differences
@@ -99,6 +115,10 @@ func checkArgs(instance string, percentage int) error {
 //
 // currentFlow: A function that when called with ctx, returns the result of the current flow.
 // newFlow: A function that when called with ctx, returns the result of the new flow.
+//
+// If currentFlow returns a nil result with a nil error, the shadow comparison
+// is skipped entirely (newFlow is not called) since there is nothing
+// meaningful to diff against; this is logged at debug level.
 //
 // Returns: The result of the current flow.
 func (s *ShadowFlow[T]) Compare(ctx context.Context, currentFlow, newFlow func(context.Context) (*T, error)) (*T, error) {
@@ -131,6 +151,10 @@ func compareFlows[T, R any](ctx context.Context, s *ShadowFlow[T], currentFlow, 
 		ctx = context.Background()
 	}
 	originalResponse, err := currentFlow(ctx)
+	if err == nil && originalResponse == nil {
+		s.logger.Debug("shadow flow skipped: current flow returned a nil result")
+		return originalResponse, nil
+	}
 	if err != nil || !s.shouldCallNewFlow() {
 		return originalResponse, err
 	}
