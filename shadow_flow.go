@@ -330,8 +330,12 @@ func toString(value any) string {
 	switch v := value.(type) {
 	case int:
 		return strconv.Itoa(v)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case uint64:
+		return strconv.FormatUint(v, 10)
 	case float64:
-		return fmt.Sprintf("%f", v)
+		return strconv.FormatFloat(v, 'g', -1, 64)
 	case bool:
 		return strconv.FormatBool(v)
 	case string:

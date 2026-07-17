@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"slices"
 	"strings"
 	"sync"
@@ -142,6 +143,74 @@ func TestCompareWithNoopEncryptionService(t *testing.T) {
 	// With encryption configured, the field paths stay out of the plain-text
 	// attributes by default — they may contain sensitive map keys.
 	assertNotLogged(t, buf.String(), "properties=")
+}
+
+func TestToString(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+		want  string
+	}{
+		{"int", int(42), "42"},
+		{"negative int64", int64(-42), "-42"},
+		{"min int64", int64(math.MinInt64), "-9223372036854775808"},
+		{"max int64", int64(math.MaxInt64), "9223372036854775807"},
+		{"max uint64 exceeds max int64", uint64(math.MaxUint64), "18446744073709551615"},
+		// %f would truncate this to 6 decimals ("0.123457"), silently hiding
+		// the actual value being diffed.
+		{"float64 preserves precision beyond 6 decimals", 0.1234567, "0.1234567"},
+		{"float64 whole number has no trailing zeros", 100.0, "100"},
+		{"bool true", true, "true"},
+		{"bool false", false, "false"},
+		{"string passthrough", "unchanged", "unchanged"},
+		{"default fallback for unhandled type", []int{1, 2}, fmt.Sprintf("%v", []int{1, 2})},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := toString(tt.value)
+			if got != tt.want {
+				t.Errorf("toString(%#v) = %q, want %q", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+// floatResponse exercises a float64 diff field end-to-end through Compare, to
+// prove the precision fix in toString is actually wired into the real diff
+// log and not just reachable in isolation.
+type floatResponse struct {
+	Rate float64 `diff:"rate"`
+}
+
+func TestFloatPrecisionPreservedInDiffLog(t *testing.T) {
+	buf := new(bytes.Buffer)
+	encryptionService := NewNoopEncryptionService()
+	shadowFlow, _ := New[floatResponse](
+		"HUB_NAME",
+		100,
+		WithLogger(testLogger(buf)),
+		WithEncryptionService(encryptionService),
+	)
+
+	currentFlow := func(context.Context) (*floatResponse, error) {
+		return &floatResponse{Rate: 0.1234567}, nil
+	}
+	newFlow := func(context.Context) (*floatResponse, error) {
+		return &floatResponse{Rate: 0.7654321}, nil
+	}
+
+	_, _ = shadowFlow.Compare(context.Background(), currentFlow, newFlow)
+	shadowFlow.Wait()
+
+	// If toString still used fmt.Sprintf("%f", v), both values would be
+	// truncated to 6 decimals ("0.123457" / "0.765432").
+	expectedEncryptedValues, _ := encryptionService.Encrypt("'rate' update: '0.1234567' -> '0.7654321'")
+
+	assertLogged(t, buf.String(),
+		`msg="differences found"`,
+		fmt.Sprintf("encrypted_values=%q", expectedEncryptedValues),
+	)
 }
 
 func TestPlaintextPropertiesLoggedWhenOptedIn(t *testing.T) {
