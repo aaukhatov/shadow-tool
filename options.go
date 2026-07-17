@@ -48,8 +48,8 @@ func WithEncryptionService(encryptionService EncryptionService) Option {
 
 // WithShadowTimeout bounds each shadow flow call: the context passed to the
 // new flow is cancelled after the given duration. Without it, shadow flows
-// get a default timeout of defaultShadowTimeout; use WithoutShadowTimeout to
-// run them unbounded instead.
+// get a default timeout of 10 seconds; use WithoutShadowTimeout to run them
+// unbounded instead.
 func WithShadowTimeout(timeout time.Duration) Option {
 	return func(c *config) error {
 		if timeout <= 0 {

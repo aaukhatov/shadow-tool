@@ -104,8 +104,9 @@ func checkArgs(instance string, percentage int) error {
 // The context is passed to currentFlow as-is. The new flow runs in the
 // background on a context derived with context.WithoutCancel, so it keeps the
 // request's values (trace IDs) but is not cancelled together with the
-// request; it is instead bounded by defaultShadowTimeout unless overridden
-// with WithShadowTimeout, or left unbounded with WithoutShadowTimeout.
+// request; it is instead bounded by a default timeout of 10 seconds unless
+// overridden with WithShadowTimeout, or left unbounded with
+// WithoutShadowTimeout.
 //
 // Both results are normalised through a JSON round-trip before comparison, so
 // the caller may mutate the returned value right away and only differences
