@@ -29,8 +29,10 @@ Both results are normalised through a JSON round-trip before the diff, so you ar
 immediately and only differences that survive `encoding/json` are reported - unexported fields and fields tagged
 `json:"-"` are never compared. The shadow flow receives a context derived
 with `context.WithoutCancel`, so it keeps the request's values (trace IDs) but is not cancelled together with the
-request; use `WithShadowTimeout` to bound it. At most 100 shadow flows run concurrently by default - sampled calls
-beyond the cap are skipped, never queued - and the cap is configurable with `WithMaxConcurrentShadows`.
+request; it is bounded by a 10-second default timeout so a hung new flow can't hold its concurrency slot forever, and
+that timeout can be changed with `WithShadowTimeout` or removed entirely with `WithoutShadowTimeout`. At most 100
+shadow flows run concurrently by default - sampled calls beyond the cap are skipped, never queued - and the cap is
+configurable with `WithMaxConcurrentShadows`.
 
 Without an encryption service, only the *names* of the differing fields are logged. If you construct the flow with an
 encryption service, the old and new *values* are logged too, encrypted.
@@ -164,8 +166,10 @@ your secret manager.
 
 ### Other options
 
-* `WithShadowTimeout(d)` - cancels the context passed to the shadow flow after `d`. Without it the shadow flow runs
-  until it returns on its own.
+* `WithShadowTimeout(d)` - cancels the context passed to the shadow flow after `d`, instead of the 10-second default.
+* `WithoutShadowTimeout()` - removes the default timeout, so the shadow flow runs until it returns on its own. A hung
+  new flow then holds its concurrency slot indefinitely, so prefer `WithShadowTimeout` unless the new flow is already
+  known to be bounded.
 * `WithMaxConcurrentShadows(n)` - caps the number of shadow flows running at the same time (default 100). Sampled calls
   beyond the cap are skipped, never queued, so a slow new flow cannot pile up goroutines.
 * `WithPlaintextProperties()` - logs the differing field paths in plain text next to the encrypted values (see above).

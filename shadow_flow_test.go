@@ -694,6 +694,53 @@ func TestWithShadowTimeoutMustBePositive(t *testing.T) {
 	}
 }
 
+func TestDefaultShadowTimeoutIsApplied(t *testing.T) {
+	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100)
+
+	currentFlow := func(context.Context) (*dummyResponse, error) {
+		return &dummyResponse{Name: "John"}, nil
+	}
+	var sawDeadline bool
+	newFlow := func(ctx context.Context) (*dummyResponse, error) {
+		_, sawDeadline = ctx.Deadline()
+		return &dummyResponse{Name: "Doe"}, nil
+	}
+
+	_, _ = shadowFlow.Compare(context.Background(), currentFlow, newFlow)
+	shadowFlow.Wait()
+
+	if !sawDeadline {
+		t.Errorf("Expected the shadow context to carry a default deadline")
+	}
+}
+
+func TestWithoutShadowTimeoutDisablesDefault(t *testing.T) {
+	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100, WithoutShadowTimeout())
+
+	currentFlow := func(context.Context) (*dummyResponse, error) {
+		return &dummyResponse{Name: "John"}, nil
+	}
+	sawDeadline := true
+	newFlow := func(ctx context.Context) (*dummyResponse, error) {
+		_, sawDeadline = ctx.Deadline()
+		return &dummyResponse{Name: "Doe"}, nil
+	}
+
+	_, _ = shadowFlow.Compare(context.Background(), currentFlow, newFlow)
+	shadowFlow.Wait()
+
+	if sawDeadline {
+		t.Errorf("Expected no deadline on the shadow context when WithoutShadowTimeout is set")
+	}
+}
+
+func TestShadowTimeoutOptionsConflict(t *testing.T) {
+	_, err := New[dummyResponse]("HUB_NAME", 100, WithShadowTimeout(time.Second), WithoutShadowTimeout())
+	if err == nil {
+		t.Errorf("Expected error when combining WithShadowTimeout and WithoutShadowTimeout")
+	}
+}
+
 func TestWithMaxConcurrentShadowsMustBePositive(t *testing.T) {
 	_, err := New[dummyResponse]("HUB_NAME", 100, WithMaxConcurrentShadows(0))
 	if err == nil {
