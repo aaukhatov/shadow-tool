@@ -166,12 +166,15 @@ func compareFlows[T, R any](ctx context.Context, s *ShadowFlow[T], currentFlow, 
 		return originalResponse, nil
 	}
 
-	// Diff a copy so the caller may mutate the returned response while the
-	// shadow comparison is still running.
-	originalCopy, copyErr := deepCopy(originalResponse)
-	if copyErr != nil {
+	// Snapshot the response so the caller may mutate it after Compare returns
+	// while the shadow comparison is still running. Only the Marshal half must
+	// happen synchronously, before that mutation can occur; the matching
+	// Unmarshal only reads these already-snapshotted bytes, so it moves into
+	// the goroutine to keep it off the caller's request path.
+	originalData, marshalErr := json.Marshal(originalResponse)
+	if marshalErr != nil {
 		<-s.semaphore
-		s.logger.Error("failed to copy response for shadow comparison", slog.Any("error", copyErr))
+		s.logger.Error("failed to copy response for shadow comparison", slog.Any("error", marshalErr))
 		return originalResponse, nil
 	}
 
@@ -209,6 +212,12 @@ func compareFlows[T, R any](ctx context.Context, s *ShadowFlow[T], currentFlow, 
 		shadowCopy, copyErr := deepCopy(shadowResponse)
 		if copyErr != nil {
 			s.logger.Error("failed to copy shadow response for comparison", slog.Any("error", copyErr))
+			return
+		}
+
+		originalCopy := new(R)
+		if err := json.Unmarshal(originalData, originalCopy); err != nil {
+			s.logger.Error("failed to copy response for shadow comparison", slog.Any("error", err))
 			return
 		}
 		s.diff(originalCopy, shadowCopy)
@@ -264,13 +273,9 @@ func (s *ShadowFlow[T]) diff(originalResponse, shadowResponse any) {
 		return
 	}
 
-	changedProperties := make([]string, 0)
-	changedValues := make([]string, 0)
-
+	changedProperties := make([]string, 0, len(changelog))
 	for _, change := range changelog {
-		fieldPath := toFullPath(change)
-		changedProperties = append(changedProperties, fieldPath)
-		changedValues = append(changedValues, prettyPrintDiff(fieldPath, change))
+		changedProperties = append(changedProperties, toFullPath(change))
 	}
 
 	properties := strings.Join(changedProperties, ", ")
@@ -285,6 +290,13 @@ func (s *ShadowFlow[T]) diff(originalResponse, shadowResponse any) {
 	attrs := []any{slog.Int("count", len(changelog))}
 	if s.plaintextProperties {
 		attrs = append(attrs, slog.String("properties", properties))
+	}
+
+	// changedValues (with its pretty-printed diff text) is only ever read
+	// below, so it is built here rather than unconditionally above.
+	changedValues := make([]string, 0, len(changelog))
+	for i, change := range changelog {
+		changedValues = append(changedValues, prettyPrintDiff(changedProperties[i], change))
 	}
 
 	encryptedValues, err := s.encryptionService.Encrypt(strings.Join(changedValues, "\n"))
@@ -318,8 +330,12 @@ func toString(value any) string {
 	switch v := value.(type) {
 	case int:
 		return strconv.Itoa(v)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case uint64:
+		return strconv.FormatUint(v, 10)
 	case float64:
-		return fmt.Sprintf("%f", v)
+		return strconv.FormatFloat(v, 'g', -1, 64)
 	case bool:
 		return strconv.FormatBool(v)
 	case string:
