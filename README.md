@@ -151,16 +151,25 @@ Two implementations ship with the package:
 
 * `NewNoopEncryptionService()` - no encryption at all, it only base64-encodes the values. Fine for local development;
   don't use it where the logs matter, since base64 is trivially reversible.
-* `NewPublicKeyEncryptionService(publicKey)` - encrypts with RSA-OAEP (SHA-256) using your `*rsa.PublicKey`, so only the
-  holder of the private key can read the values. Note that RSA-OAEP caps the message size (about 190 bytes with a
-  2048-bit key); if a diff is too large to encrypt, the field names are still logged, but the values are dropped rather
-  than logged in plain text.
+* `NewPublicKeyEncryptionService(publicKey)` - hybrid (envelope) encryption using your `*rsa.PublicKey`: each diff is
+  encrypted with a fresh random AES-256-GCM data key, and only that small data key is wrapped with RSA-OAEP
+  (SHA-256). Only the holder of the matching private key can read the values. Unlike encrypting the diff directly
+  with RSA-OAEP, there's no practical size limit on the diff.
 
 With an encryption service configured, a divergence produces a log line like:
 
 ```
-time=2024-03-01T12:00:00.000Z level=INFO msg="differences found" component=shadow-flow instance=payload-service count=1 encrypted_values="mzHJ..."
+time=2024-03-01T12:00:00.000Z level=INFO msg="differences found" component=shadow-flow instance=payload-service count=1 encrypted_values="{\"key\":\"Gk3f...\",\"nonce\":\"q7z1pR8m...\",\"ciphertext\":\"mzHJ...\"}"
 ```
+
+`encrypted_values` for `PublicKeyEncryptionService` is a JSON envelope with three base64 fields:
+
+* `key` - the AES-256 data key, wrapped with RSA-OAEP (SHA-256) under the public key.
+* `nonce` - the 12-byte AES-GCM nonce.
+* `ciphertext` - the diff, encrypted with AES-256-GCM under the data key and nonce (includes the auth tag).
+
+To decrypt: base64-decode all three fields, RSA-OAEP/SHA-256-decrypt `key` with the private key to recover the
+32-byte AES data key, then AES-256-GCM-open `ciphertext` using `nonce`.
 
 The differing field paths are *not* logged in plain text by default: diff paths include map keys, which may themselves
 be sensitive (say, a map keyed by e-mail address). The full paths travel inside the encrypted payload. If your responses

@@ -3,6 +3,8 @@ package shadowflow
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -211,6 +213,48 @@ func TestFloatPrecisionPreservedInDiffLog(t *testing.T) {
 		`msg="differences found"`,
 		fmt.Sprintf("encrypted_values=%q", expectedEncryptedValues),
 	)
+}
+
+// TestCompareWithPublicKeyEncryptionServiceLargeDiff is the end-to-end
+// regression test for the bug where encrypting a diff directly with
+// RSA-OAEP capped the payload at ~190 bytes for a 2048-bit key: any
+// non-trivial diff returned rsa.ErrMessageTooLong, and because diff fails
+// closed on an encrypt error, the values were dropped and only
+// encrypt_error was logged. With envelope encryption a large diff must
+// still produce encrypted_values, never encrypt_error.
+func TestCompareWithPublicKeyEncryptionServiceLargeDiff(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("Failed to generate RSA keys %v", err)
+	}
+	encryptionService, err := NewPublicKeyEncryptionService(&privateKey.PublicKey)
+	if err != nil {
+		t.Fatalf("Failed to create the encryption service %v", err)
+	}
+
+	buf := new(bytes.Buffer)
+	shadowFlow, _ := New[dummyResponse](
+		"HUB_NAME",
+		100,
+		WithLogger(testLogger(buf)),
+		WithEncryptionService(encryptionService),
+	)
+
+	// A long street name pushes the joined diff payload well past the
+	// 190-byte OAEP limit for a 2048-bit key.
+	longStreet := strings.Repeat("Croeselaan-", 30)
+	currentFlow := func(context.Context) (*dummyResponse, error) {
+		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: longStreet + "old"}}, nil
+	}
+	newFlow := func(context.Context) (*dummyResponse, error) {
+		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: longStreet + "new"}}, nil
+	}
+
+	_, _ = shadowFlow.Compare(context.Background(), currentFlow, newFlow)
+	shadowFlow.Wait()
+
+	assertLogged(t, buf.String(), `msg="differences found"`, "encrypted_values=")
+	assertNotLogged(t, buf.String(), "encrypt_error")
 }
 
 func TestPlaintextPropertiesLoggedWhenOptedIn(t *testing.T) {
