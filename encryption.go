@@ -16,6 +16,11 @@ import (
 
 // EncryptionService encrypts the diff values logged by a ShadowFlow so they
 // don't leak sensitive data in plain text.
+//
+// Implementations must not embed plainText or key material in the error they
+// return from Encrypt: ShadowFlow logs that error's type on failure, but
+// never trusts its message, since a message like "failed to encrypt %q with
+// key %x" would leak the exact data encryption is meant to protect.
 type EncryptionService interface {
 	Encrypt(plainText string) (string, error)
 }

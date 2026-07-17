@@ -302,8 +302,11 @@ func (s *ShadowFlow[T]) diff(originalResponse, shadowResponse any) {
 	encryptedValues, err := s.encryptionService.Encrypt(strings.Join(changedValues, "\n"))
 	if err != nil {
 		// Fail closed: on encryption failure the values are dropped, never
-		// logged in plain text.
-		attrs = append(attrs, slog.Any("encrypt_error", err))
+		// logged in plain text. The error itself is untrusted too: EncryptionService
+		// is implemented by callers, and an implementation's error could embed the
+		// plaintext or key material (e.g. a wrapped "failed to encrypt %q with key
+		// %x" style message). Only the error's type is logged, never its message.
+		attrs = append(attrs, slog.String("encrypt_error_type", fmt.Sprintf("%T", err)))
 		s.logger.Info("differences found", attrs...)
 		return
 	}

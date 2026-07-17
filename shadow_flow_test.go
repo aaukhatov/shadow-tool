@@ -184,6 +184,59 @@ func TestCompareWithPublicKeyEncryptionServiceLogsKeyFingerprint(t *testing.T) {
 	)
 }
 
+// leakySecretKey stands in for key material a careless EncryptionService
+// implementation might embed in its error text, e.g. for debugging.
+const leakySecretKey = "super-secret-key-0xDEADBEEF"
+
+// leakyEncryptionService simulates such an implementation: it always fails,
+// and wraps the plaintext it was asked to encrypt and a "key" into the error
+// message rather than keeping the error opaque.
+type leakyEncryptionService struct{}
+
+func (leakyEncryptionService) Encrypt(plainText string) (string, error) {
+	return "", fmt.Errorf("failed to encrypt %q with key %s: boom", plainText, leakySecretKey)
+}
+
+// TestCompareEncryptionErrorDoesNotLeakMessage guards against a regression
+// back to logging the encryption error's message: ShadowFlow must treat that
+// message as untrusted, since a buggy or careless EncryptionService
+// implementation may embed the plaintext diff or key material in it. Only
+// the error's static type is safe to log.
+func TestCompareEncryptionErrorDoesNotLeakMessage(t *testing.T) {
+	buf := new(bytes.Buffer)
+	shadowFlow, _ := New[dummyResponse](
+		"HUB_NAME",
+		100,
+		WithLogger(testLogger(buf)),
+		WithEncryptionService(leakyEncryptionService{}),
+	)
+
+	currentFlow := func(context.Context) (*dummyResponse, error) {
+		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
+	}
+	newFlow := func(context.Context) (*dummyResponse, error) {
+		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}, nil
+	}
+
+	_, _ = shadowFlow.Compare(context.Background(), currentFlow, newFlow)
+	shadowFlow.Wait()
+
+	output := buf.String()
+	assertLogged(t, output,
+		`msg="differences found"`,
+		"count=3",
+		"encrypt_error_type=",
+	)
+	assertNotLogged(t, output,
+		leakySecretKey,
+		"John",
+		"Doe",
+		"2024-01-01",
+		"2024-01-02",
+		"boom",
+	)
+}
+
 func TestToString(t *testing.T) {
 	tests := []struct {
 		name  string
