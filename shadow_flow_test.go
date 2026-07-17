@@ -607,6 +607,35 @@ func TestConcurrencyLimitSkipsShadow(t *testing.T) {
 	assertLogged(t, buf.String(), `msg="shadow flow skipped: concurrency limit reached"`)
 }
 
+func TestNilCurrentResultSkipsShadow(t *testing.T) {
+	buf := new(bytes.Buffer)
+	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100, WithLogger(testLogger(buf)))
+
+	var newFlowCalls atomic.Int32
+	currentFlow := func(context.Context) (*dummyResponse, error) {
+		return nil, nil //nolint:nilnil // a nil result without an error is exactly the case under test
+	}
+	newFlow := func(context.Context) (*dummyResponse, error) {
+		newFlowCalls.Add(1)
+		return &dummyResponse{Name: "Doe"}, nil
+	}
+
+	result, err := shadowFlow.Compare(context.Background(), currentFlow, newFlow)
+	shadowFlow.Wait()
+
+	if err != nil {
+		t.Errorf("Expected no error, got %v", err)
+	}
+	if result != nil {
+		t.Errorf("Expected a nil result, got %v", result)
+	}
+	if calls := newFlowCalls.Load(); calls != 0 {
+		t.Errorf("Expected newFlow not to be called, but it was called %d times", calls)
+	}
+	assertLogged(t, buf.String(), `msg="shadow flow skipped: current flow returned a nil result"`)
+	assertNotLogged(t, buf.String(), `msg="calling new flow"`)
+}
+
 func TestShadowFlowSurvivesRequestCancellation(t *testing.T) {
 	buf := new(bytes.Buffer)
 	shadowFlow, _ := New[dummyResponse]("HUB_NAME", 100, WithLogger(testLogger(buf)))

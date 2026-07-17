@@ -100,6 +100,10 @@ func checkArgs(instance string, percentage int) error {
 // currentFlow: A function that when called with ctx, returns the result of the current flow.
 // newFlow: A function that when called with ctx, returns the result of the new flow.
 //
+// If currentFlow returns a nil result with a nil error, the shadow comparison
+// is skipped entirely (newFlow is not called) since there is nothing
+// meaningful to diff against; this is logged at debug level.
+//
 // Returns: The result of the current flow.
 func (s *ShadowFlow[T]) Compare(ctx context.Context, currentFlow, newFlow func(context.Context) (*T, error)) (*T, error) {
 	return compareFlows(ctx, s, currentFlow, newFlow)
@@ -131,6 +135,10 @@ func compareFlows[T, R any](ctx context.Context, s *ShadowFlow[T], currentFlow, 
 		ctx = context.Background()
 	}
 	originalResponse, err := currentFlow(ctx)
+	if err == nil && originalResponse == nil {
+		s.logger.Debug("shadow flow skipped: current flow returned a nil result")
+		return originalResponse, nil
+	}
 	if err != nil || !s.shouldCallNewFlow() {
 		return originalResponse, err
 	}
