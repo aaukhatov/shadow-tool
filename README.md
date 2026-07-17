@@ -162,13 +162,22 @@ With an encryption service configured, a divergence produces a log line like:
 time=2024-03-01T12:00:00.000Z level=INFO msg="differences found" component=shadow-flow instance=payload-service count=1 encrypted_values="mzHJ..."
 ```
 
+`NewPublicKeyEncryptionService` additionally logs a `key_fingerprint` attribute - a short, stable identifier for the
+configured public key (the first 8 bytes of the SHA-256 hash of its DER encoding) - alongside `encrypted_values`, so a
+log line can be matched to the private key that can decrypt it after the key is rotated:
+
+```
+time=2024-03-01T12:00:00.000Z level=INFO msg="differences found" component=shadow-flow instance=payload-service count=1 encrypted_values="mzHJ..." key_fingerprint=3f9a1c2e7b4d5f60
+```
+
 The differing field paths are *not* logged in plain text by default: diff paths include map keys, which may themselves
 be sensitive (say, a map keyed by e-mail address). The full paths travel inside the encrypted payload. If your responses
 carry no sensitive map keys and you want the paths visible for quick triage, opt back in with
 `shadowflow.WithPlaintextProperties()`.
 
 You can also implement the one-method `EncryptionService` interface yourself, for example to use AES-GCM with a key from
-your secret manager.
+your secret manager. Implement the optional `KeyFingerprinter` interface (`KeyFingerprint() string`) as well to get the
+same `key_fingerprint` log attribute for your own implementation.
 
 ### Other options
 

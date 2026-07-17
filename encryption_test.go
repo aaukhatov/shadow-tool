@@ -4,7 +4,10 @@ import (
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"testing"
 )
 
@@ -68,5 +71,57 @@ func TestShouldDecryptEncodedText(t *testing.T) {
 
 	if string(decryptedText) != diffResult {
 		t.Errorf("Decrypted text does not match original plain text actual: %v, expected: %v", string(decryptedText), diffResult)
+	}
+}
+
+func TestKeyFingerprintMatchesDEREncodedPublicKeyHash(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("Failed to generate RSA keys %v", err)
+	}
+
+	publicKeyEncryption, err := NewPublicKeyEncryptionService(&privateKey.PublicKey)
+	if err != nil {
+		t.Fatalf("Failed to create the encryption service %v", err)
+	}
+
+	derBytes, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+	if err != nil {
+		t.Fatalf("Failed to marshal public key %v", err)
+	}
+	sum := sha256.Sum256(derBytes)
+	expected := hex.EncodeToString(sum[:8])
+
+	if fingerprint := publicKeyEncryption.KeyFingerprint(); fingerprint != expected {
+		t.Errorf("Expected key fingerprint %q, got %q", expected, fingerprint)
+	}
+
+	// Deterministic: calling it again returns the same value.
+	if fingerprint := publicKeyEncryption.KeyFingerprint(); fingerprint != expected {
+		t.Errorf("Expected key fingerprint to stay %q, got %q", expected, fingerprint)
+	}
+}
+
+func TestKeyFingerprintDiffersBetweenKeys(t *testing.T) {
+	privateKeyA, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("Failed to generate RSA keys %v", err)
+	}
+	privateKeyB, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("Failed to generate RSA keys %v", err)
+	}
+
+	serviceA, err := NewPublicKeyEncryptionService(&privateKeyA.PublicKey)
+	if err != nil {
+		t.Fatalf("Failed to create the encryption service %v", err)
+	}
+	serviceB, err := NewPublicKeyEncryptionService(&privateKeyB.PublicKey)
+	if err != nil {
+		t.Fatalf("Failed to create the encryption service %v", err)
+	}
+
+	if serviceA.KeyFingerprint() == serviceB.KeyFingerprint() {
+		t.Errorf("Expected different keys to produce different fingerprints, both were %q", serviceA.KeyFingerprint())
 	}
 }

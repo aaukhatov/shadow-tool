@@ -309,6 +309,9 @@ func (s *ShadowFlow[T]) diff(originalResponse, shadowResponse any) {
 	}
 
 	attrs = append(attrs, slog.String("encrypted_values", encryptedValues))
+	if fingerprinter, ok := s.encryptionService.(KeyFingerprinter); ok {
+		attrs = append(attrs, slog.String("key_fingerprint", fingerprinter.KeyFingerprint()))
+	}
 	s.logger.Info("differences found", attrs...)
 }
 

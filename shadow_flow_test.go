@@ -3,6 +3,8 @@ package shadowflow
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -143,6 +145,43 @@ func TestCompareWithNoopEncryptionService(t *testing.T) {
 	// With encryption configured, the field paths stay out of the plain-text
 	// attributes by default — they may contain sensitive map keys.
 	assertNotLogged(t, buf.String(), "properties=")
+	// NoopEncryptionService has no key, so it does not implement
+	// KeyFingerprinter and no fingerprint is logged.
+	assertNotLogged(t, buf.String(), "key_fingerprint=")
+}
+
+func TestCompareWithPublicKeyEncryptionServiceLogsKeyFingerprint(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("Failed to generate RSA keys %v", err)
+	}
+	encryptionService, err := NewPublicKeyEncryptionService(&privateKey.PublicKey)
+	if err != nil {
+		t.Fatalf("Failed to create the encryption service %v", err)
+	}
+
+	buf := new(bytes.Buffer)
+	shadowFlow, _ := New[dummyResponse](
+		"HUB_NAME",
+		100,
+		WithLogger(testLogger(buf)),
+		WithEncryptionService(encryptionService),
+	)
+
+	currentFlow := func(context.Context) (*dummyResponse, error) {
+		return &dummyResponse{Name: "John", BirthDate: "2024-01-01", Address: address{Number: 18, Street: "Croeselaan"}}, nil
+	}
+	newFlow := func(context.Context) (*dummyResponse, error) {
+		return &dummyResponse{Name: "Doe", BirthDate: "2024-01-02", Address: address{Number: 20, Street: "Croeselaan"}}, nil
+	}
+
+	_, _ = shadowFlow.Compare(context.Background(), currentFlow, newFlow)
+	shadowFlow.Wait()
+
+	assertLogged(t, buf.String(),
+		`msg="differences found"`,
+		fmt.Sprintf("key_fingerprint=%s", encryptionService.KeyFingerprint()),
+	)
 }
 
 func TestToString(t *testing.T) {
