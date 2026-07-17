@@ -7,7 +7,9 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 )
@@ -16,6 +18,14 @@ import (
 // don't leak sensitive data in plain text.
 type EncryptionService interface {
 	Encrypt(plainText string) (string, error)
+}
+
+// KeyFingerprinter is implemented by EncryptionService implementations that
+// have an associated key, so a ShadowFlow can log which key encrypted a
+// value. This lets old log lines be matched to the right private key after
+// key rotation.
+type KeyFingerprinter interface {
+	KeyFingerprint() string
 }
 
 // NoopEncryptionService is a version of the EncryptionService that doesn't perform any encryption,
@@ -35,7 +45,8 @@ func NewNoopEncryptionService() *NoopEncryptionService {
 // PublicKeyEncryptionService is a struct that represents the EncryptionService for encrypting data using a public key.
 // The encryption process uses SHA-256 as the hash function.
 type PublicKeyEncryptionService struct {
-	publicKey *rsa.PublicKey
+	publicKey      *rsa.PublicKey
+	keyFingerprint string
 }
 
 // NewPublicKeyEncryptionService creates a PublicKeyEncryptionService that
@@ -48,7 +59,24 @@ func NewPublicKeyEncryptionService(publicKey *rsa.PublicKey) (*PublicKeyEncrypti
 	if bits := publicKey.N.BitLen(); bits < 2048 {
 		return nil, fmt.Errorf("public key must be at least 2048 bits, got %d", bits)
 	}
-	return &PublicKeyEncryptionService{publicKey: publicKey}, nil
+
+	derBytes, err := x509.MarshalPKIXPublicKey(publicKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal public key: %w", err)
+	}
+	sum := sha256.Sum256(derBytes)
+
+	return &PublicKeyEncryptionService{
+		publicKey:      publicKey,
+		keyFingerprint: hex.EncodeToString(sum[:8]),
+	}, nil
+}
+
+// KeyFingerprint returns a short, stable identifier for the configured public
+// key (the first 8 bytes of the SHA-256 hash of its DER encoding), so log
+// lines can be matched to the private key that can decrypt them.
+func (e *PublicKeyEncryptionService) KeyFingerprint() string {
+	return e.keyFingerprint
 }
 
 // Encrypt encrypts plainText with RSA-OAEP using the configured public key
